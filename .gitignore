@@ -1,0 +1,21 @@
+.venv/
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.egg-info/
+.env
+.env.*
+*.swp
+Thumbs.db
+.DS_Store
+Cartela_dist.zip
+app_files/data/mega_cache.json
+
+# IDEs
+.vscode/
+.idea/
