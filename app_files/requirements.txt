@@ -1,0 +1,5 @@
+```pip-requirements
+numpy==1.26.4
+fpdf==1.7.2
+
+```
