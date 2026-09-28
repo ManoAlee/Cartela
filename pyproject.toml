@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "cartela"
 version = "2.0.0"
 authors = [
-  { name="Alessandro Meneses", email="alessandro.meneses@automotion.com" },
+  { name="Alessandro Meneses", email="alessandro.meneses@Enterprise.com" },
 ]
 description = "Advanced Mathematical Lottery Intelligence Lab — Game Theory, Covering Designs C(v,k,t), Joan Ginther Arbitrage and NIST SP 800-22 Randomness Audit"
 readme = "README.md"

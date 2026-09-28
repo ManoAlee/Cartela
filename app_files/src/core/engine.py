@@ -649,7 +649,7 @@ class MegaSenaEngine:
                 self.set_y(-15)
                 self.set_font("Helvetica", "I", 8)
                 self.set_text_color(148, 163, 184)
-                self.cell(0, 10, f"Pagina {self.page_no()} | Automotion Intelligence Lab", align="C")
+                self.cell(0, 10, f"Pagina {self.page_no()} | Enterprise Intelligence Lab", align="C")
 
         pdf = PDFReport()
         pdf.set_auto_page_break(True, margin=15)
