@@ -1,5 +1,6 @@
 # 🎱 Cartela — Advanced Mathematical Lottery Intelligence Lab
 
+[![CI Pipeline](https://github.com/ManoAlee/Cartela/actions/workflows/ci.yml/badge.svg)](https://github.com/ManoAlee/Cartela/actions)
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Test Suite](https://img.shields.io/badge/tests-12%2F12%20passing-success.svg?logo=checkmarx&logoColor=white)](tests/)
 [![Data Source](https://img.shields.io/badge/Caixa%20Econ%C3%B4mica%20Federal-3.063%2B%20Concursos-0284c7.svg)](https://loterias.caixa.gov.br/)
@@ -22,10 +23,13 @@
   - [3. Radar de Arbitragem Financeira Joan Ginther](#3-radar-de-arbitragem-financeira-joan-ginther)
   - [4. Auditoria de Aleatoriedade NIST SP 800-22](#4-auditoria-de-aleatoriedade-nist-sp-800-22)
   - [5. Baricentro Multivariado de Mahalanobis e Entropia](#5-baricentro-multivariado-de-mahalanobis-e-entropia)
+- [Documentação Detalhada](#-documentação-detalhada-whitepapers)
 - [Interface Gráfica Minimalista](#-interface-gráfica-minimalista)
 - [Instalação e Execução](#-instalação-e-execução)
+- [Demonstração Rápida em Código](#-demonstração-rápida-em-código-cli)
 - [Suíte de Testes Automatizados](#-suíte-de-testes-automatizados)
 - [Estrutura do Repositório](#-estrutura-do-repositório)
+- [Citação Acadêmica](#-citação-acadêmica)
 - [Referências Bibliográficas](#-referências-bibliográficas)
 
 ---
@@ -110,6 +114,17 @@ $$\vec{x} = [\text{Soma}, \text{Amplitude}, \text{Desvio Padrão}, \text{Pares},
 
 ---
 
+## 📚 Documentação Detalhada (Whitepapers)
+
+Para aprofundamento técnico, consulte os documentos dedicados na pasta [`docs/`](docs/):
+
+- 📄 **[Especificação Matemática Formal](docs/MATHEMATICAL_SPECIFICATION.md):** Deduções hipergeométricas, limite de Schönheim, equações de colisão e regularização de Tikhonov.
+- 🏛️ **[Arquitetura de Software & Concorrência](docs/ARCHITECTURE.md):** Diagrama de containers C4, thread-safety com `RLock` e pipeline assíncrono.
+- 🤝 **[Diretrizes de Contribuição](docs/CONTRIBUTING.md):** Fluxo de trabalho TDD (Test-Driven Development) e padrões de commit semântico.
+- 🛡️ **[Política de Segurança](docs/SECURITY.md):** Diretrizes de divulgação responsável e auditoria estocástica.
+
+---
+
 ## 🎨 Interface Gráfica Minimalista
 
 A interface foi projetada sob o conceito **Dark Slate Design System**, eliminando poluição visual, ruídos gráficos e sobrecarga de dados:
@@ -143,6 +158,16 @@ pip install -r requirements.txt
 ### 3. Iniciar a Aplicação
 ```bash
 python run_app.py
+```
+
+---
+
+## 💻 Demonstração Rápida em Código (CLI)
+
+Você pode executar o motor analítico e gerar fechamentos combinatórios diretamente pelo terminal através do script em [`examples/`](examples/):
+
+```bash
+python examples/quickstart_analysis.py
 ```
 
 ---
@@ -182,24 +207,49 @@ OK
 
 ```text
 Cartela/
-├── run_app.py                 # Ponto de entrada principal da aplicação
-├── requirements.txt           # Dependências essenciais (fpdf2, numpy)
-├── README.md                  # Documentação técnica e científica completa
+├── run_app.py                   # Ponto de entrada canônico da aplicação
+├── pyproject.toml               # Padrão moderno de empacotamento PEP 517/518/621
+├── requirements.txt             # Dependências essenciais (fpdf2, numpy)
+├── LICENSE                      # Licença MIT
+├── CITATION.cff                 # Arquivo de citação acadêmica padronizado
+├── README.md                    # Documentação técnica e científica completa
+├── docs/                        # Whitepapers e guias técnicos aprofundados
+│   ├── MATHEMATICAL_SPECIFICATION.md
+│   ├── ARCHITECTURE.md
+│   ├── CONTRIBUTING.md
+│   └── SECURITY.md
+├── .github/
+│   └── workflows/
+│       └── ci.yml               # Pipeline de Integração Contínua (Ubuntu & Windows)
 ├── tests/
-│   └── test_engine.py         # 12 testes unitários formais e provas combinatórias
-├── app_files/
-│   ├── data/
-│   │   ├── mega_cache.json    # Cache local íntegro de 3.063 concursos oficiais Caixa
-│   │   └── mega_history.csv   # Histórico tabular completo para análise externa
-│   ├── scripts/
-│   │   ├── make_icon.py       # Gerador utilitário de ícone
-│   │   └── update_cache.py    # Atualizador manual de histórico
-│   └── src/
-│       ├── app/
-│       │   └── gui.py         # Interface Gráfica Tkinter (Design System Minimalista)
-│       └── core/
-│           └── engine.py      # Motor Matemático, Teoria dos Jogos & Covering Designs
-└── graphify-out/              # Mapeamento do grafo de conhecimento da base de código
+│   └── test_engine.py           # 12 testes unitários formais e provas combinatórias
+├── examples/
+│   └── quickstart_analysis.py   # Demonstração rápida de uso da API
+└── app_files/
+    ├── data/
+    │   ├── mega_cache.json      # Cache local íntegro de 3.063 concursos oficiais Caixa
+    │   └── mega_history.csv     # Histórico tabular completo para análise externa
+    └── src/
+        ├── app/
+        │   └── gui.py           # Interface Gráfica Tkinter (Design System Minimalista)
+        └── core/
+            └── engine.py        # Motor Matemático, Teoria dos Jogos & Covering Designs
+```
+
+---
+
+## 🔖 Citação Acadêmica
+
+Se você utilizar este software ou seus modelos matemáticos em estudos estatísticos ou publicações acadêmicas, utilize a seguinte referência:
+
+```bibtex
+@software{meneses2026cartela,
+  author = {Meneses, Alessandro},
+  title = {Cartela: Advanced Mathematical Lottery Intelligence Lab},
+  year = {2026},
+  url = {https://github.com/ManoAlee/Cartela},
+  version = {2.0.0}
+}
 ```
 
 ---

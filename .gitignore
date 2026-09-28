@@ -19,3 +19,5 @@ app_files/data/mega_cache.json
 # IDEs
 .vscode/
 .idea/
+
+graphify-out/
