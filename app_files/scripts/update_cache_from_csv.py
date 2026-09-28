@@ -1,4 +1,3 @@
-```python
 import csv
 import json
 import shutil
@@ -51,4 +50,3 @@ with open(CACHE, 'w', encoding='utf-8') as g:
 
 print('Escreveu', len(out), 'entradas em', CACHE)
 
-```

@@ -1,4 +1,3 @@
-```python
 from PIL import Image
 import os
 
@@ -18,4 +17,3 @@ icon_sizes = [s for s in sizes]
 img.save(OUT, format='ICO', sizes=icon_sizes)
 print('Ícone gerado em', OUT)
 
-```

@@ -1,4 +1,3 @@
-```python
 import sys
 import os
 
@@ -32,4 +31,3 @@ if __name__ == '__main__':
     app = CartelaApp()
     app.mainloop()
 
-```
