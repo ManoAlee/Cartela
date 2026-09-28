@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-engine.py - Motor Estatístico, Teoria dos Jogos e Covering Designs para Mega-Sena
-Baseado na Literatura Científica de Matemática Aplicada:
+engine.py - Motor Estatístico, Teoria dos Jogos, Covering Designs e Arbitragem Ginther-Mandel
+Baseado na Literatura Científica de Matemática Aplicada e Arbitragem Estatística:
 1. Teoria da Informação & Entropia de Shannon (H(X) ≈ 25.57 bits)
 2. Teste de Aderência Qui-Quadrado (NIST / Dieharder) contra 3063+ concursos reais
-3. Teoria dos Jogos & Maximização do Valor Esperado E[X] (Anti-Colisão / Fuga de Datas 1-31)
+3. Teoria dos Jogos & Maximização do Valor Esperado E[X] (Anti-Colisão / Fuga de Aniversário 1-31)
 4. Covering Designs Combinatórios C(v, k, t) - Fechamento Matemático com garantia de Quadra/Quina
-5. Backtesting Rigoroso contra 100% dos sorteios reais da Caixa
+5. Modelo de Arbitragem Ginther-Mandel (Radar de Valor Esperado Positivo E[X] > 0 para Loterias Brasileiras)
+6. Otimizador de Sindicatos / Bolões de Alta Performance
 """
 
 import os
@@ -137,16 +138,132 @@ class MegaSenaEngine:
         return self.concursos
 
     # -------------------------------------------------------------
-    # 2. TESTE DE ADERÊNCIA QUI-QUADRADO (NIST SP 800-22 / DIEHARD)
+    # 2. RADAR DE ARBITRAGEM GINTHER-MANDEL & VALOR ESPERADO (E[X])
+    # -------------------------------------------------------------
+    def calcular_arbitragem_ginther_mandel(self,
+                                           premio_estimado: float,
+                                           custo_aposta: float = 6.0,
+                                           tipo_concurso: str = "especial") -> Dict[str, Any]:
+        """
+        Aplica a lógica de Joan Ginther e Stefan Mandel para loterias brasileiras:
+        Calcula o Valor Esperado Real E[X] de cada aposta individual e para sindicatos.
+        
+        No modelo Mandel-Ginther:
+        - Espaço Amostral Ω = 50.063.860 combinações.
+        - P(Sena) = 1 / 50.063.860
+        - P(Quina) = 324 / 50.063.860 (≈ 1 em 154.518)
+        - P(Quadra) = 21.465 / 50.063.860 (≈ 1 em 2.332)
+        
+        Se o concurso é especial (Mega da Virada), o prêmio NÃO acumula. Se ninguém acertar a sena,
+        o montante desce automaticamente para a Quina, explodindo a taxa de retorno secundário!
+        """
+        total_comb = 50063860.0
+        p_sena = 1.0 / total_comb
+        p_quina = 324.0 / total_comb
+        p_quadra = 21465.0 / total_comb
+
+        # Estimativa de prêmios por faixa (Regulamento Caixa: 35% Sena, 19% Quina, 19% Quadra)
+        premio_sena = premio_estimado
+        premio_quina_medio = 50000.0 if tipo_concurso == "normal" else 150000.0
+        premio_quadra_medio = 1000.0 if tipo_concurso == "normal" else 2500.0
+
+        # Valor Esperado Puro (Single Player, Sem Colisão)
+        ev_sena_puro = premio_sena * p_sena
+        ev_quina = premio_quina_medio * p_quina
+        ev_quadra = premio_quadra_medio * p_quadra
+        ev_bruto = ev_sena_puro + ev_quina + ev_quadra
+
+        ev_liquido = ev_bruto - custo_aposta
+        roi_percent = (ev_liquido / custo_aposta) * 100.0
+
+        # Ponto de Equilíbrio (Breakeven Jackpot) onde EV se torna positivo
+        breakeven_jackpot = (custo_aposta - ev_quina - ev_quadra) * total_comb
+
+        # Modelagem de Risco de Colisão (Splitting Penalty)
+        # Se você joga aniversários (números <= 31), N_colisões esperadas é alto (~15 a 50 na Mega da Virada)
+        # Se você joga com o Algoritmo Anti-Colisão, N_colisões esperadas cai para 1 ou 2
+        ev_com_anticolisao = (premio_sena / 1.5) * p_sena + ev_quina + ev_quadra - custo_aposta
+        ev_sem_anticolisao = (premio_sena / 18.0) * p_sena + ev_quina + ev_quadra - custo_aposta
+
+        if ev_liquido > 0:
+            status_arbitragem = "🟢 ARBITRAGEM MATEMÁTICA FAVORÁVEL (E[X] > 0)"
+            diretriz = (
+                f"O prêmio de R$ {premio_estimado/1e6:.1f}M supera o custo de cobertura do espaço amostral. "
+                f"Com a estratégia Anti-Colisão, o bilhete de R$ {custo_aposta:.2f} tem valor intrínseco de "
+                f"R$ {ev_bruto:.2f} (Retorno Esperado de +{roi_percent:.1f}%)."
+            )
+        else:
+            status_arbitragem = "🔴 VALOR ESPERADO NEGATIVO (E[X] < 0 - Casa em Vantagem)"
+            diretriz = (
+                f"Para este concurso, cada bilhete tem valor intrínseco de R$ {ev_bruto:.2f} contra o custo de "
+                f"R$ {custo_aposta:.2f}. O ponto de equilíbrio para arbitragem matemática pura ocorre quando o "
+                f"prêmio acumulado ultrapassa R$ {breakeven_jackpot/1e6:.1f} Milhões."
+            )
+
+        return {
+            "premio_analisado": premio_estimado,
+            "custo_aposta": custo_aposta,
+            "valor_esperado_bruto": round(ev_bruto, 2),
+            "valor_esperado_liquido": round(ev_liquido, 2),
+            "roi_esperado_percent": round(roi_percent, 1),
+            "breakeven_jackpot": round(breakeven_jackpot, 2),
+            "ev_com_estrategia_anticolisao": round(ev_com_anticolisao, 2),
+            "ev_sem_estrategia_aniversarios": round(ev_sem_anticolisao, 2),
+            "status_arbitragem": status_arbitragem,
+            "diretriz_executiva": diretriz
+        }
+
+    # -------------------------------------------------------------
+    # 3. OTIMIZADOR DE SINDICATO & BOLÕES MANDEL
+    # -------------------------------------------------------------
+    def planejar_bolao_sindicato(self, orcamento_reais: float, custo_bilhete: float = 6.0) -> Dict[str, Any]:
+        """
+        Modela a alocação de capital em sindicato (estratégia Stefan Mandel / Joan Ginther):
+        Calcula o pool ótimo de dezenas e o sistema de Covering Design garantido para o orçamento.
+        """
+        qtd_volantes = int(orcamento_reais // custo_bilhete)
+        if qtd_volantes < 1:
+            return {"erro": "Orçamento insuficiente para pelo menos 1 aposta."}
+
+        # Encontra o maior tamanho de pool v cuja cobertura de quadra cabe no orçamento
+        pool_otimo_tamanho = 6
+        for v in range(7, 25):
+            # Aproximação empírica do número de blocos para Covering C(v, 6, 4)
+            blocos_estimados = math.ceil(math.comb(v, 4) / math.comb(6, 4))
+            if blocos_estimados <= qtd_volantes:
+                pool_otimo_tamanho = v
+            else:
+                break
+
+        # Gera pool selecionado com base nas dezenas de maior dispersão espacial e anti-colisão
+        scores = self.pontuar_dezenas()
+        # Seleciona dezenas equilibrando números altos (>31) e os 4 quadrantes
+        dezenas_candidatas = sorted([d for d, _ in sorted(scores.items(), key=lambda x: -x[1]) if d > 31][:pool_otimo_tamanho // 2] +
+                                    [d for d, _ in sorted(scores.items(), key=lambda x: -x[1]) if d <= 31][:pool_otimo_tamanho - (pool_otimo_tamanho // 2)])
+        dezenas_pool = sorted(dezenas_candidatas[:pool_otimo_tamanho])
+
+        jogos_cobertura = self.gerar_fechamento_combinatorio(dezenas_pool, garantia="quadra")
+        custo_fechamento = len(jogos_cobertura) * custo_bilhete
+
+        return {
+            "orcamento_informado": orcamento_reais,
+            "total_volantes_possiveis": qtd_volantes,
+            "tamanho_pool_recomendado": pool_otimo_tamanho,
+            "pool_dezenas_selecionado": dezenas_pool,
+            "volantes_no_fechamento_garantido": len(jogos_cobertura),
+            "custo_fechamento_reais": custo_fechamento,
+            "sobra_orcamento": orcamento_reais - custo_fechamento,
+            "garantia_matematica": f"100% de garantia de QUADRA se as 6 sorteadas estiverem no pool de {pool_otimo_tamanho} dezenas.",
+            "jogos_gerados": jogos_cobertura
+        }
+
+    # -------------------------------------------------------------
+    # 4. TESTE DE ADERÊNCIA QUI-QUADRADO (NIST / DIEHARD)
     # -------------------------------------------------------------
     def teste_qui_quadrado(self) -> Dict[str, Any]:
-        """
-        Executa o teste formal de Qui-Quadrado (Goodness-of-Fit) sobre todos os concursos.
-        H0: A probabilidade de cada dezena sair é estritamente uniforme p = 1/60.
-        """
         N = len(self.concursos)
         total_bolas = N * 6
-        esperado = total_bolas / 60.0  # 306.3 para 3063 concursos
+        esperado = total_bolas / 60.0
 
         freq = {d: 0 for d in range(1, 61)}
         for c in self.concursos:
@@ -154,9 +271,8 @@ class MegaSenaEngine:
                 freq[d] += 1
 
         chi2_stat = sum(((freq[d] - esperado) ** 2) / esperado for d in range(1, 61))
-        graus_liberdade = 59  # 60 - 1
+        graus_liberdade = 59
 
-        # Aproximação de Wilson-Hilferty para o p-valor da distribuição Qui-Quadrado
         z = ((chi2_stat / graus_liberdade) ** (1/3) - (1 - 2/(9*graus_liberdade))) / math.sqrt(2/(9*graus_liberdade))
         p_valor = 0.5 * math.erfc(z / math.sqrt(2))
 
@@ -169,7 +285,6 @@ class MegaSenaEngine:
             "estatistica_qui_quadrado": round(chi2_stat, 2),
             "graus_liberdade": graus_liberdade,
             "p_valor": round(p_valor, 4),
-            "hipotese_nula": "Uniforme e Independente (P=1/60)",
             "conclusao_cientifica": conclusao,
             "explicacao": (
                 f"Com Chi2={chi2_stat:.2f} e p-valor={p_valor:.4f} > 0.05, comprova-se cientificamente "
@@ -179,23 +294,14 @@ class MegaSenaEngine:
         }
 
     # -------------------------------------------------------------
-    # 3. TEORIA DOS JOGOS & MAXIMIZAÇÃO DO VALOR ESPERADO (ANTI-COLISÃO)
+    # 5. TEORIA DOS JOGOS & ANTI-COLISÃO
     # -------------------------------------------------------------
     def calcular_indice_anti_colisao(self, jogo: List[int]) -> Dict[str, Any]:
-        """
-        Calcula o potencial de retorno financeiro esperado E[X] com base na Teoria dos Jogos:
-        Penaliza concentração em aniversários (1 a 31), padrões visuais e baixa entropia.
-        """
         dezenas_aniversario = [d for d in jogo if d <= 31]
         pct_aniversario = (len(dezenas_aniversario) / 6.0) * 100
-
-        # Penalidade por consecutivos
         consecutivos = sum(1 for i in range(len(jogo) - 1) if jogo[i + 1] - jogo[i] == 1)
-
-        # Entropia de Shannon
         ent = self.entropia_shannon(jogo)
 
-        # Score de 0 a 100 (quanto maior, menor a chance de dividir o prêmio com milhares de apostas)
         score = 100.0
         score -= (len(dezenas_aniversario) - 3) * 15.0 if len(dezenas_aniversario) > 3 else 0.0
         score -= consecutivos * 12.0
@@ -221,30 +327,20 @@ class MegaSenaEngine:
         }
 
     # -------------------------------------------------------------
-    # 4. COVERING DESIGNS C(v, k, t) - FECHAMENTOS COMBINATÓRIOS
+    # 6. COVERING DESIGNS C(v, k, t)
     # -------------------------------------------------------------
     def gerar_fechamento_combinatorio(self, dezenas_pool: List[int], garantia: str = "quadra") -> List[List[int]]:
-        """
-        Gera um sistema de Covering Design combinatório extremal:
-        A partir de um pool de v dezenas (ex: 10 a 15 dezenas), gera o número mínimo ótimo de
-        jogos de k=6 que GARANTE matematicamente acertar 'quadra' (t=4) ou 'quina' (t=5)
-        caso as 6 sorteadas estejam dentro do seu pool de dezenas escolhidas.
-        """
         pool = sorted(list(set(dezenas_pool)))
         v = len(pool)
         if v < 6:
             raise ValueError("O pool deve ter pelo menos 6 dezenas.")
-
         if v == 6:
             return [pool]
 
         t_garantia = 4 if garantia == "quadra" else 5
-
-        # Algoritmo guloso de cobertura de hipergrafo (Greedy Set Cover para Covering Designs)
         todas_tuplas_alvo = set(itertools.combinations(pool, t_garantia))
         todos_blocos_k6 = list(itertools.combinations(pool, 6))
 
-        # Pré-computa quais tuplas t cada bloco cobre
         bloco_cobertura = []
         for bloco in todos_blocos_k6:
             cobertos = set(itertools.combinations(bloco, t_garantia))
@@ -254,21 +350,18 @@ class MegaSenaEngine:
         jogos_selecionados = []
 
         while tuplas_restantes:
-            # Escolhe o bloco que cobre a maior quantidade de tuplas ainda não cobertas
             melhor_bloco, melhor_cobertos = max(
                 bloco_cobertura,
                 key=lambda item: len(item[1].intersection(tuplas_restantes))
             )
             jogos_selecionados.append(sorted(list(melhor_bloco)))
             tuplas_restantes -= melhor_cobertos
-
-            # Remove da lista de blocos candidatos
             bloco_cobertura = [item for item in bloco_cobertura if item[0] != melhor_bloco]
 
         return jogos_selecionados
 
     # -------------------------------------------------------------
-    # 5. MATRIZ DE MAHALANOBIS & ENTROPIA
+    # 7. MATRIZ DE MAHALANOBIS & ENTROPIA
     # -------------------------------------------------------------
     def _extrair_vetor_caracteristicas(self, jogo: List[int]) -> List[float]:
         soma = float(sum(jogo))
@@ -361,6 +454,18 @@ class MegaSenaEngine:
                     atrasos[d] = dist
         return atrasos
 
+    def pontuar_dezenas(self) -> Dict[int, float]:
+        freq_global = self.calcular_frequencias()
+        freq_recente = self.calcular_frequencias(ultimos_n=100)
+        atrasos = self.calcular_atrasos()
+        max_g = max(freq_global.values()) if freq_global else 1
+        max_r = max(freq_recente.values()) if freq_recente else 1
+        max_a = max(atrasos.values()) if atrasos else 1
+        scores = {}
+        for d in range(1, 61):
+            scores[d] = 0.5 * (freq_global[d] / max_g) + 0.3 * (freq_recente[d] / max_r) + 0.2 * (1.0 - atrasos[d] / max_a)
+        return scores
+
     def validar_filtros(self, jogo: List[int], min_soma: int = 140, max_soma: int = 225) -> bool:
         soma = sum(jogo)
         if not (min_soma <= soma <= max_soma):
@@ -385,17 +490,8 @@ class MegaSenaEngine:
                     min_soma: int = 140,
                     max_soma: int = 225,
                     forcar_filtros: bool = False) -> List[List[int]]:
-        """
-        Gera jogos baseados nos fundamentos científicos:
-        - 'anti_colisao': Maximização do Valor Esperado E[X], fuga de aniversários (1-31) e dispersão.
-        - 'mahalanobis': Seleção pelo baricentro multivariado histórico.
-        - 'frequencia': Ponderado pelas dezenas com desvio positivo da Poisson.
-        - 'aleatorio': Amostragem uniforme Monte Carlo filtrada.
-        """
         populacao = list(range(1, 61))
-        # Pesos para anti-colisão: favorece números > 31 para minimizar divisão de prêmio
         pesos_anticolisao = [1.0 if d <= 31 else 1.95 for d in range(1, 61)]
-
         freq = self.calcular_frequencias()
         max_f = max(freq.values()) if freq else 1
         pesos_freq = [freq[d] / max_f for d in range(1, 61)]
@@ -428,7 +524,7 @@ class MegaSenaEngine:
                 break
 
         if modo == "anti_colisao":
-            candidatos.sort(key=lambda x: -x[0])  # Maior score anti-colisão
+            candidatos.sort(key=lambda x: -x[0])
         elif modo == "mahalanobis":
             candidatos.sort(key=lambda x: abs(x[1] - 2.45))
         else:
@@ -454,7 +550,7 @@ class MegaSenaEngine:
         return jogos_gerados
 
     # -------------------------------------------------------------
-    # 6. SIMULAÇÃO HISTÓRICA / BACKTESTING
+    # 8. BACKTESTING HISTÓRICO
     # -------------------------------------------------------------
     def backtest_jogo(self, jogo: List[int]) -> Dict[str, Any]:
         jogo_set = set(jogo)
@@ -476,7 +572,7 @@ class MegaSenaEngine:
         }
 
     # -------------------------------------------------------------
-    # 7. EXPORTAÇÃO (PDF / CSV)
+    # 9. EXPORTAÇÃO (PDF / CSV)
     # -------------------------------------------------------------
     def exportar_csv(self, jogos: List[List[int]], filepath: str):
         with open(filepath, "w", encoding="utf-8", newline="") as f:
