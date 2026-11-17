@@ -95,6 +95,25 @@ class MegaSenaEngine:
                             return list(self.concursos)
                 except Exception as e:
                     logging.error(f"Erro ao ler cache: {e}")
+
+            if HISTORY_CSV.exists():
+                try:
+                    concursos_csv: List[List[int]] = []
+                    with open(HISTORY_CSV, "r", encoding="utf-8") as f:
+                        reader = csv.reader(f, delimiter=";")
+                        header = next(reader, None)
+                        for row in reader:
+                            if len(row) >= 7:
+                                dezenas = sorted(int(x) for x in row[1:7])
+                                if len(dezenas) == 6:
+                                    concursos_csv.append(dezenas)
+                    if concursos_csv:
+                        self.concursos = concursos_csv
+                        self._calibrar_matriz_mahalanobis()
+                        return list(self.concursos)
+                except Exception as e:
+                    logging.error(f"Erro ao ler histórico CSV: {e}")
+
             return self.sincronizar_dados_oficiais()
 
     def _http_get_bytes(self, url: str, timeout: int = 8, headers: Optional[Dict[str, str]] = None) -> bytes:
@@ -1160,7 +1179,7 @@ class MegaSenaEngine:
         pesos_anticolisao = [1.0 if d <= 31 else 1.95 for d in range(1, 61)]
         freq = self.calcular_frequencias()
         max_f = max(freq.values()) if freq and max(freq.values()) > 0 else 1
-        pesos_freq = [freq.get(d, 1) / max_f for d in range(1, 61)]
+        pesos_freq = [max(0.01, freq.get(d, 0) / max_f) for d in range(1, 61)]
 
         candidatos: List[Tuple[float, float, List[int]]] = []
         max_iter = max(1000, quantidade * 250)
