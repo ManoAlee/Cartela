@@ -367,6 +367,84 @@ class TestMegaSenaEngineComprehensive(unittest.TestCase):
             delta=0.05,
         )
 
+    def test_19_community_api_fallback_normalization(self):
+        """Valida fallback para API comunitária quando servicebus3 e servicebus2 falham."""
+        from unittest.mock import patch
+
+        community_payload = {
+            "concurso": 3087,
+            "data": "17/11/2026",
+            "dezenas": ["05", "12", "23", "37", "48", "59"],
+            "acumulou": False,
+            "valorAcumuladoProximoConcurso": 3000000.0,
+        }
+
+        def fake_get_json(url, timeout=8):
+            if "servicebus" in url or "params.txt" in url:
+                raise ConnectionError("API oficial bloqueada no datacenter")
+            return community_payload
+
+        self.engine._api_base = None
+        with patch.object(self.engine, "_http_get_json", side_effect=fake_get_json):
+            res = self.engine.obter_ultimo_resultado_online()
+
+        self.assertIsNotNone(res)
+        self.assertEqual(res["numero"], 3087)
+        self.assertEqual(res["dezenas"], [5, 12, 23, 37, 48, 59])
+
+    def test_20_sindicato_bolao_and_pruned_covering(self):
+        """Valida planejador de bolão/sindicato e garantia 100% do fechamento podado C(11,6,4)."""
+        bolao = self.engine.planejar_bolao_sindicato(150.0)
+        self.assertNotIn("erro", bolao)
+        self.assertGreaterEqual(bolao["tamanho_pool_recomendado"], 7)
+        self.assertGreater(len(bolao["jogos_gerados"]), 0)
+
+        pool = [2, 7, 13, 19, 24, 31, 36, 42, 47, 53, 59]
+        fechamento = self.engine.gerar_fechamento_combinatorio(pool, garantia="quadra")
+        self.assertGreater(len(fechamento), 0)
+        for sorteio in itertools.combinations(pool, 6):
+            s_set = set(sorteio)
+            self.assertGreaterEqual(max(len(s_set.intersection(v)) for v in fechamento), 4)
+
+    def test_21_kelly_criterion_kolmogorov_and_montecarlo(self):
+        """Valida Critério de Kelly (Thorp), Incompressibilidade de Kolmogorov e Monte Carlo nativo."""
+        arb_pos = self.engine.calcular_arbitragem_ginther_mandel(1000000000.0, 6.0, "especial")
+        self.assertGreater(arb_pos["kelly_fracao_otima_pct"], 0.0)
+        self.assertAlmostEqual(arb_pos["kelly_quarto_pct"], round(arb_pos["kelly_fracao_otima_pct"] * 0.25, 8), delta=1e-7)
+
+        arb_neg = self.engine.calcular_arbitragem_ginther_mandel(5000000.0, 6.0, "normal")
+        self.assertEqual(arb_neg["kelly_fracao_otima_pct"], 0.0)
+
+        kol = self.engine.auditar_incompressibilidade_kolmogorov()
+        self.assertTrue(kol["incompressivel"], f"Série histórica deve ser algorítmicamente incompressível: {kol}")
+
+        mc = self.engine.simular_monte_carlo([12, 14, 27, 40, 42, 45], sorteios=20000)
+        self.assertEqual(mc["sorteios"], 20000)
+        self.assertGreaterEqual(mc["tempo_ms"], 0.0)
+
+    def test_22_quina_and_binary_orthogonal_engine(self):
+        """Valida Quina (01-80, k=5, Mask128) e motor binário ortogonal (distância de Hamming)."""
+        arb_q = self.engine.calcular_arbitragem_quina(80000000.0, 3.0, "especial")
+        self.assertEqual(arb_q["modalidade"], "QUINA")
+        self.assertGreater(arb_q["valor_esperado_bruto"], 3.0)
+
+        jogos_q = self.engine.gerar_jogos_quina(quantidade=4, modo="anti_colisao")
+        self.assertEqual(len(jogos_q), 4)
+        for j in jogos_q:
+            self.assertEqual(len(j), 5)
+            self.assertTrue(all(1 <= d <= 80 for d in j))
+
+        pool_q = [5, 17, 29, 41, 53, 64, 72, 79]
+        fech_q = self.engine.gerar_fechamento_quina(pool_q, garantia="terno")
+        self.assertGreater(len(fech_q), 0)
+        for sorteio in itertools.combinations(pool_q, 5):
+            s_set = set(sorteio)
+            self.assertGreaterEqual(max(len(s_set.intersection(v)) for v in fech_q), 3)
+
+        ort = self.engine.gerar_jogos_ortogonais_binarios(quantidade=5, modalidade="QUINA")
+        self.assertEqual(len(ort["jogos"]), 5)
+        self.assertGreaterEqual(ort["hamming_minimo"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

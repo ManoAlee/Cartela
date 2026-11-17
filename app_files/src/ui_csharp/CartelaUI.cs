@@ -182,6 +182,11 @@ namespace CartelaUI
         private TextBlock _lblGenSummary;
         private StackPanel _ticketsListPanel;
         private List<List<int>> _currentGeneratedGames = new List<List<int>>();
+        private bool _heatmapMode = false;
+        private Button _btnHeatmap;
+        private readonly Dictionary<int, int> _freqMap = new Dictionary<int, int>();
+        private readonly Dictionary<int, int> _delayMap = new Dictionary<int, int>();
+        private List<int> _lastHighlighted = new List<int>();
 
         // Fechamentos state
         private readonly HashSet<int> _poolSelected = new HashSet<int> { 4, 12, 19, 28, 35, 43, 51, 58, 10, 22 };
@@ -195,8 +200,9 @@ namespace CartelaUI
         private StackPanel _fechListPanel;
         private List<List<int>> _currentFechGames = new List<List<int>>();
 
-        // Arbitragem state
+        // Arbitragem & Bolao state
         private TextBox _txtPremio;
+        private TextBox _txtOrcamento;
         private TextBlock _kpiArbStatus;
         private TextBlock _kpiArbValor;
         private TextBlock _kpiArbRoi;
@@ -756,14 +762,21 @@ namespace CartelaUI
 
             // 10x6 Volante Preview Grid
             var volantePanel = new StackPanel();
-            volantePanel.Children.Add(new TextBlock
+            var volHdr = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+            volHdr.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            volHdr.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            volHdr.Children.Add(new TextBlock
             {
-                Text = "Volante Oficial (01 – 60) • Clique em um jogo ao lado para visualizar",
+                Text = "Volante Oficial (01 – 60) • Clique em um jogo para destacar",
                 Foreground = Theme.TextMuted,
                 FontSize = 11.5,
                 FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, 0, 0, 12)
+                VerticalAlignment = VerticalAlignment.Center
             });
+            _btnHeatmap = CreateSecondaryButton("Mapa de Calor", async (s, e) => await ToggleHeatmapAsync());
+            Grid.SetColumn(_btnHeatmap, 1);
+            volHdr.Children.Add(_btnHeatmap);
+            volantePanel.Children.Add(volHdr);
             var grid10x6 = new UniformGrid { Columns = 10, Rows = 6 };
             for (int i = 0; i < 60; i++)
             {
@@ -869,14 +882,74 @@ namespace CartelaUI
 
         private void HighlightVolante(List<int> dezenas)
         {
-            var set = new HashSet<int>(dezenas ?? new List<int>());
+            _lastHighlighted = dezenas ?? new List<int>();
+            var set = new HashSet<int>(_lastHighlighted);
+            if (_heatmapMode && _freqMap.Count == 60)
+            {
+                int minF = _freqMap.Values.Min();
+                int maxF = Math.Max(minF + 1, _freqMap.Values.Max());
+                for (int i = 0; i < 60; i++)
+                {
+                    int num = i + 1;
+                    int f = _freqMap[num];
+                    int d = _delayMap.ContainsKey(num) ? _delayMap[num] : 0;
+                    double ratio = (double)(f - minF) / (maxF - minF);
+                    if (ratio >= 0.72)
+                    {
+                        _gridBalls[i].Background = Theme.GoldLight;
+                        _gridBalls[i].BorderBrush = Theme.GoldBorder;
+                        _gridBallTexts[i].Foreground = Theme.GoldText;
+                    }
+                    else if (ratio >= 0.38)
+                    {
+                        _gridBalls[i].Background = Theme.EmeraldLight;
+                        _gridBalls[i].BorderBrush = Theme.Brush("#86EFAC");
+                        _gridBallTexts[i].Foreground = Theme.EmeraldDark;
+                    }
+                    else
+                    {
+                        _gridBalls[i].Background = Theme.BlueLight;
+                        _gridBalls[i].BorderBrush = Theme.Brush("#BAE6FD");
+                        _gridBallTexts[i].Foreground = Theme.Blue;
+                    }
+                    _gridBalls[i].ToolTip = string.Format("Dezena {0:00} • {1} sorteios • Atraso: {2} conc.", num, f, d);
+                }
+                return;
+            }
             for (int i = 0; i < 60; i++)
             {
                 bool on = set.Contains(i + 1);
                 _gridBalls[i].Background = on ? Theme.Emerald : Theme.BgMuted;
                 _gridBalls[i].BorderBrush = on ? Theme.EmeraldDark : Theme.Border;
                 _gridBallTexts[i].Foreground = on ? Brushes.White : Theme.TextSecondary;
+                _gridBalls[i].ToolTip = null;
             }
+        }
+
+        private async Task ToggleHeatmapAsync()
+        {
+            _heatmapMode = !_heatmapMode;
+            _btnHeatmap.Background = _heatmapMode ? Theme.GoldLight : Theme.BgSurface;
+            _btnHeatmap.BorderBrush = _heatmapMode ? Theme.GoldBorder : Theme.BorderStrong;
+            _btnHeatmap.Foreground = _heatmapMode ? Theme.GoldText : Theme.TextPrimary;
+            if (_heatmapMode && _freqMap.Count < 60)
+            {
+                var res = await _bridge.CallAsync("heatmap");
+                if (res.ContainsKey("ok") && Convert.ToBoolean(res["ok"]))
+                {
+                    var freqs = res["frequencias"] as Dictionary<string, object>;
+                    var atrasos = res["atrasos"] as Dictionary<string, object>;
+                    if (freqs != null)
+                    {
+                        foreach (var kv in freqs) _freqMap[int.Parse(kv.Key)] = Convert.ToInt32(kv.Value);
+                    }
+                    if (atrasos != null)
+                    {
+                        foreach (var kv in atrasos) _delayMap[int.Parse(kv.Key)] = Convert.ToInt32(kv.Value);
+                    }
+                }
+            }
+            HighlightVolante(_lastHighlighted);
         }
 
         private UIElement CreateTicketRow(int idx, List<int> dezenas, int soma, double score, bool clickableForVolante)
@@ -1125,10 +1198,20 @@ namespace CartelaUI
 
             var inRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             inRow.Children.Add(new TextBlock { Text = "Prêmio Estimado (R$):", Foreground = Theme.TextSecondary, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
-            _txtPremio = MakeInputBox("1000000000", 170);
-            _txtPremio.Margin = new Thickness(12, 0, 12, 0);
+            _txtPremio = MakeInputBox("1000000000", 150);
+            _txtPremio.Margin = new Thickness(10, 0, 10, 0);
             inRow.Children.Add(_txtPremio);
-            inRow.Children.Add(CreateSecondaryButton("Carregar Mega da Virada (Ao Vivo)", async (s, e) => await LoadLiveViradaIntoArbitragemAsync()));
+            var btnVirada = CreateSecondaryButton("Mega da Virada (Ao Vivo)", async (s, e) => await LoadLiveViradaIntoArbitragemAsync());
+            btnVirada.Margin = new Thickness(0, 0, 16, 0);
+            inRow.Children.Add(btnVirada);
+            inRow.Children.Add(new TextBlock { Text = "Orçamento Bolão (R$):", Foreground = Theme.TextSecondary, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
+            _txtOrcamento = MakeInputBox("150", 80);
+            _txtOrcamento.Margin = new Thickness(8, 0, 8, 0);
+            inRow.Children.Add(_txtOrcamento);
+            var btnBolao = CreateSecondaryButton("Planejar Bolão Ótimo", async (s, e) => await RunBolaoAsync());
+            btnBolao.Margin = new Thickness(0, 0, 8, 0);
+            inRow.Children.Add(btnBolao);
+            inRow.Children.Add(CreateSecondaryButton("Simular 100k Sorteios (C#)", async (s, e) => await RunMonteCarloAsync()));
             top.Children.Add(inRow);
             stack.Children.Add(MakeCard(top, new Thickness(20)));
 
@@ -1486,6 +1569,8 @@ namespace CartelaUI
             double breakeven = Convert.ToDouble(r["breakeven_jackpot"], CultureInfo.InvariantCulture);
             double evAnti = Convert.ToDouble(r["ev_com_estrategia_anticolisao"], CultureInfo.InvariantCulture);
             double evSem = Convert.ToDouble(r["ev_sem_estrategia_aniversarios"], CultureInfo.InvariantCulture);
+            double kellyFull = r.ContainsKey("kelly_fracao_otima_pct") ? Convert.ToDouble(r["kelly_fracao_otima_pct"], CultureInfo.InvariantCulture) : 0.0;
+            double kellyQ = r.ContainsKey("kelly_quarto_pct") ? Convert.ToDouble(r["kelly_quarto_pct"], CultureInfo.InvariantCulture) : 0.0;
 
             _kpiArbStatus.Text = status.Split('(')[0].Trim();
             _kpiArbStatus.Foreground = roi >= 0 ? Theme.Emerald : Theme.Danger;
@@ -1494,9 +1579,69 @@ namespace CartelaUI
             _txtArbDetail.Text = string.Format(
                 "• Ponto de Equilíbrio (Breakeven Jackpot): R$ {0:N2}\n" +
                 "• Retorno Líquido com Anti-Colisão (dezenas > 31): E[X] = R$ {1:+0.00;-0.00}\n" +
-                "• Risco com Datas de Aniversário (divisão provável): E[X] = R$ {2:+0.00;-0.00}\n\n" +
-                "Diretriz Executiva: {3}",
-                breakeven, evAnti, evSem, r["diretriz_executiva"]);
+                "• Risco com Datas de Aniversário (divisão provável): E[X] = R$ {2:+0.00;-0.00}\n" +
+                "• Critério de Kelly (Edward Thorp): Kelly Full = {3:0.0000}% | Quarter-Kelly = {4:0.0000}%\n\n" +
+                "Diretriz Executiva: {5}",
+                breakeven, evAnti, evSem, kellyFull, kellyQ, r["diretriz_executiva"]);
+        }
+
+        private async Task RunMonteCarloAsync()
+        {
+            var jogo = _currentGeneratedGames.Count > 0
+                ? _currentGeneratedGames[0].ToArray()
+                : new int[] { 12, 14, 27, 40, 42, 45 };
+            _txtArbDetail.Text = "Executando 100.000 sorteios no kernel nativo C# (/unsafe ulong*)...";
+            var res = await _bridge.CallAsync("montecarlo", new { jogo = jogo, sorteios = 100000 });
+            if (!res.ContainsKey("ok") || !Convert.ToBoolean(res["ok"])) return;
+            var r = (Dictionary<string, object>)res["resultado"];
+            var kRes = await _bridge.CallAsync("kolmogorov");
+            string kolStr = "";
+            if (kRes.ContainsKey("ok") && Convert.ToBoolean(kRes["ok"]))
+            {
+                var kr = (Dictionary<string, object>)kRes["resultado"];
+                kolStr = string.Format("\n• Auditoria Kolmogorov (Incompressibilidade): Razão Real = {0} vs Controle = {1} (Incompressível: {2})",
+                    kr["razao_real"], kr["razao_controle"], kr["incompressivel"]);
+            }
+            _txtArbDetail.Text = string.Format(
+                "SIMULAÇÃO MONTE CARLO ({0:N0} sorteios em {1} ms via {2})\n" +
+                "• Volante Testado: {3}\n" +
+                "• Quadras: {4} ({5}% empírico vs {6}% teórico)\n" +
+                "• Quinas: {7} | Senas: {8}{9}",
+                Convert.ToInt64(r["sorteios"]),
+                r["tempo_ms"],
+                r["motor"],
+                string.Join(" - ", jogo.Select(x => x.ToString("00"))),
+                r["quadras"], r["taxa_quadra_pct"], r["taxa_quadra_teorica_pct"],
+                r["quinas"], r["senas"], kolStr);
+        }
+
+        private async Task RunBolaoAsync()
+        {
+            double orc = 150.0;
+            double.TryParse(_txtOrcamento.Text, NumberStyles.Any, CultureInfo.InvariantCulture, out orc);
+            var res = await _bridge.CallAsync("bolao", new { orcamento = orc });
+            if (!res.ContainsKey("ok") || !Convert.ToBoolean(res["ok"])) return;
+            var r = (Dictionary<string, object>)res["resultado"];
+            if (r.ContainsKey("erro"))
+            {
+                MessageBox.Show(Convert.ToString(r["erro"]), "Cartela", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var pool = ((System.Collections.ArrayList)r["pool_dezenas_selecionado"]).Cast<object>().Select(x => Convert.ToInt32(x).ToString("00"));
+            var jogos = (System.Collections.ArrayList)r["jogos_gerados"];
+            var sb = new StringBuilder();
+            sb.AppendLine(string.Format("BOLÃO SINDICATO ÓTIMO • Orçamento: R$ {0:N2}", orc));
+            sb.AppendLine(string.Format("Pool ({0} dezenas): {1}", r["tamanho_pool_recomendado"], string.Join(" - ", pool)));
+            sb.AppendLine(string.Format("Volantes: {0} | Custo: R$ {1:N2} | Sobra: R$ {2:N2}",
+                r["volantes_no_fechamento_garantido"], r["custo_fechamento_reais"], r["sobra_orcamento"]));
+            sb.AppendLine(Convert.ToString(r["garantia_matematica"]));
+            sb.AppendLine();
+            int idx = 1;
+            foreach (System.Collections.ArrayList j in jogos)
+            {
+                sb.AppendLine(string.Format("#{0:00}: {1}", idx++, string.Join("  ", j.Cast<object>().Select(x => Convert.ToInt32(x).ToString("00")))));
+            }
+            _txtArbDetail.Text = sb.ToString();
         }
 
         private async Task RunBacktestAsync()

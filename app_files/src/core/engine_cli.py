@@ -110,6 +110,50 @@ def main() -> int:
             filepath = str(payload.get("filepath", ""))
             res_path = engine.exportar_pdf(jogos, filepath)
             out = {"ok": True, "filepath": res_path}
+        elif cmd == "heatmap":
+            freq = engine.calcular_frequencias()
+            atrasos = engine.calcular_atrasos()
+            chi = engine.teste_qui_quadrado()
+            out = {
+                "ok": True,
+                "frequencias": {str(k): v for k, v in freq.items()},
+                "atrasos": {str(k): v for k, v in atrasos.items()},
+                "chi2": chi,
+            }
+        elif cmd == "bolao":
+            orcamento = float(payload.get("orcamento", 150.0))
+            res = engine.planejar_bolao_sindicato(orcamento)
+            out = {"ok": True, "resultado": res}
+        elif cmd == "montecarlo":
+            jogo = [int(x) for x in payload.get("jogo", [12, 14, 27, 40, 42, 45])]
+            sorteios = int(payload.get("sorteios", 100000))
+            res = engine.simular_monte_carlo(jogo, sorteios=sorteios)
+            out = {"ok": True, "resultado": res}
+        elif cmd == "kolmogorov":
+            res = engine.auditar_incompressibilidade_kolmogorov()
+            out = {"ok": True, "resultado": res}
+        elif cmd == "ortogonal":
+            qtd = int(payload.get("quantidade", 6))
+            mod = str(payload.get("modalidade", "MEGA_SENA"))
+            res = engine.gerar_jogos_ortogonais_binarios(quantidade=qtd, modalidade=mod)
+            out = {"ok": True, "resultado": res}
+        elif cmd == "quina_status":
+            ultimo = engine.obter_ultimo_resultado_online("QUINA")
+            out = {"ok": True, "ultimo": ultimo}
+        elif cmd == "quina_gerar":
+            qtd = int(payload.get("quantidade", 6))
+            modo = str(payload.get("modo", "anti_colisao"))
+            jogos = engine.gerar_jogos_quina(quantidade=qtd, modo=modo)
+            out = {"ok": True, "jogos": jogos}
+        elif cmd == "quina_fechamento":
+            pool = [int(x) for x in payload.get("pool", [])]
+            gar = str(payload.get("garantia", "terno"))
+            jogos = engine.gerar_fechamento_quina(pool, garantia=gar)
+            out = {"ok": True, "jogos": jogos}
+        elif cmd == "quina_arbitragem":
+            premio = float(payload.get("premio", 14500000.0))
+            res = engine.calcular_arbitragem_quina(premio)
+            out = {"ok": True, "resultado": res}
         else:
             out = {"ok": False, "error": f"Comando desconhecido: {cmd}"}
     except Exception as exc:

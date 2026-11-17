@@ -6,8 +6,8 @@
 [![CI Pipeline](https://github.com/ManoAlee/Cartela/actions/workflows/ci.yml/badge.svg)](https://github.com/ManoAlee/Cartela/actions)
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Native UI & Kernel](https://img.shields.io/badge/C%23%20WPF%20%2B%20%2Funsafe-x64%20Native-16a34a.svg)](app_files/src/ui_csharp/CartelaUI.cs)
-[![Test Suite](https://img.shields.io/badge/tests-18%2F18%20passing-success.svg?logo=checkmarx&logoColor=white)](tests/)
-[![Data Source](https://img.shields.io/badge/Caixa%20servicebus3-3.086%2B%20Concursos-0284c7.svg)](https://loterias.caixa.gov.br/)
+[![Test Suite](https://img.shields.io/badge/tests-22%2F22%20passing-success.svg?logo=checkmarx&logoColor=white)](tests/)
+[![Data Source](https://img.shields.io/badge/Caixa%20servicebus3-3.086%2B%20Concursos%20%7C%20Quina-0284c7.svg)](https://loterias.caixa.gov.br/)
 [![Statistical Rigor](https://img.shields.io/badge/NIST%20SP%20800--22-Validated-10b981.svg)](https://csrc.nist.gov/publications/detail/sp/800-22/rev-1a/final)
 [![License: MIT](https://img.shields.io/badge/License-MIT-slate.svg)](LICENSE)
 
@@ -117,8 +117,58 @@ $$D_M(\vec{x}) = \sqrt{(\vec{x} - \vec{\mu})^T \Sigma^{-1} (\vec{x} - \vec{\mu})
 Utiliza um vetor característico **7D linearmente independente** (removendo a 4ª componente redundante $q_4 = 6 - q_1 - q_2 - q_3$ para garantir posto completo de $\Sigma_{7\times 7}$ sem singularidade):
 $$\vec{x} = [\text{Soma}, \text{Amplitude}, \text{Desvio Padrão}, \text{Pares}, Q_1, Q_2, Q_3]$$
 
-### 6. Kernel Nativo C# `/unsafe` (`ulong*` + SWAR `PopCount64`)
-Para operações combinatórias intensivas ($C(v, 6, t)$ e *backtesting*), cada volante é compactado em um único inteiro de **64 bits (`ulong`)**. Em benchmark nativo via `csc.exe /unsafe /optimize+ /platform:x64`, o kernel varreu **1.000 backtests completos sobre 3.063 concursos em 14,532 ms** ($\approx 14{,}5\,\mu\text{s}$ por varredura).
+### 6. Kernel Nativo C# `/unsafe` (`Mask128` + SWAR `PopCount64`) & Motor Binário `0101101`
+Para operações combinatórias intensivas ($C(v, k, t)$, *Monte Carlo* e *backtesting*), cada volante é compactado na estrutura **`Mask128`** (`Lo: 64 bits` + `Hi: 64 bits`), suportando **Mega-Sena (`01–60`, $k=6$)** e **Quina (`01–80`, $k=5$)** diretamente em dois registradores de 64 bits.
+
+<div align="center">
+  <img src="app_files/assets/cartela_binary_mask128.png" alt="Estrutura Binária Mask128" width="100%" />
+</div>
+
+#### Fluxo do Pipeline Binário & Otimização Combinatória
+```mermaid
+flowchart LR
+    Pool["Pool v Dezenas"] --> Gen["Geração de Máscaras Mask128"]
+    Gen --> Greedy["Greedy Set Cover (ulong* / stackalloc)"]
+    Greedy --> Prune["Poda de Redundância"]
+    Prune --> Swap["Busca Local 2-para-1"]
+    Swap --> Out["Matriz Ótima C(v,k,t)"]
+    Gen --> Ort["Motor Ortogonal F_2^N (max min PopCount(A ^ B))"]
+```
+
+### 7. Benchmarks Reais, Critério de Kelly & Incompressibilidade de Kolmogorov
+- **Critério de Kelly (Edward Thorp):** calcula `kelly_fracao_otima_pct` e `kelly_quarto_pct` sobre a variância exata multi-faixa.
+- **Auditoria de Kolmogorov (`zlib` nível 9 sobre `3.086` concursos = `18.516` bytes):** razão real `0.7311` vs controle embaralhado `0.7309` (`delta = 0.0002` $\rightarrow$ **série algoritmicamente incompressível**).
+- **Suporte Completo à Quina (`01–80`, $k=5$):** modelo hipergeométrico $\Omega = \binom{80}{5} = 24.040.016$ (Quina `1`, Quadra `375`, Terno `27.750`, Duque `675.250`) e motor ortogonal com distância de Hamming mínima `10.0` bits (zero sobreposição entre jogos).
+
+<div align="center">
+  <img src="app_files/assets/cartela_benchmark_chart.png" alt="Benchmarks Reais e Prova Matemática" width="100%" />
+</div>
+
+### 8. Fluxo Ponta-a-Ponta & Dados Ao Vivo Capturados (`servicebus3`)
+```mermaid
+sequenceDiagram
+    participant UI as CartelaUI.exe (C# WPF)
+    participant CLI as engine_cli.py (UTF-8)
+    participant ENG as MegaSenaEngine (Python)
+    participant KER as cartela_kernel.exe (x64 /unsafe)
+    participant API as Caixa servicebus3
+
+    UI->>CLI: Comando JSON via stdin
+    CLI->>ENG: Despacho Thread-Safe (RLock)
+    ENG->>API: GET params.txt + /api/megasena + /api/quina
+    API-->>ENG: #3086 (Virada R$ 153,6M) & #7169 (São João R$ 56,7M)
+    ENG->>KER: Mask128 (cover / montecarlo / backtest)
+    KER-->>ENG: Resultado binário (ms)
+    ENG-->>CLI: JSON Estruturado
+    CLI-->>UI: Atualização UI em Tempo Real
+```
+
+| Modalidade | Último Concurso | Dezenas Sorteadas | Próximo Estimado | Acumulado Especial |
+| :--- | :---: | :--- | :---: | :---: |
+| **Mega-Sena / Virada** | `#3086` (`15/11/2026`) | `03 - 20 - 35 - 38 - 43 - 46` | `R$ 34.000.000,00` | **R$ 153.647.230,91** (Mega da Virada) |
+| **Quina / São João** | `#7169` (`16/11/2026`) | `35 - 41 - 44 - 59 - 80` | `R$ 14.500.000,00` | **R$ 56.698.598,45** (Quina de São João) |
+
+> **Inspeção Estática REA (`cartela_kernel.exe`):** `PE32+` (`0x8664` x86_64), `8.192` bytes, `SHA-256: a166ef4244e94be4432d62a1d9b2d711467ae4c3d9837578f57bcc914fe53860`, atributo `System.Security.UnverifiableCodeAttribute` (`0x0c000001`).
 
 ---
 
@@ -187,9 +237,9 @@ python examples/quickstart_analysis.py
 
 ---
 
-## 🧪 Suíte de Testes Automatizados (18/18 Provas Reais)
+## 🧪 Suíte de Testes Automatizados (22/22 Provas Reais)
 
-O projeto conta com **18 testes unitários formais**, verificando integridade dos dados reais, invariantes matemáticos (posto completo 7D de Mahalanobis, correção hipergeométrica $\frac{59}{54}$), provas combinatórias por força bruta, kernel nativo C# `/unsafe`, parser `.xlsx` em stdlib e integração `servicebus3`:
+O projeto conta com **22 testes unitários formais**, verificando integridade dos dados reais, invariantes matemáticos (posto completo 7D de Mahalanobis, correção hipergeométrica $\frac{59}{54}$, Critério de Kelly, Incompressibilidade de Kolmogorov), provas combinatórias por força bruta (`Mega-Sena` e `Quina`), kernel nativo C# `/unsafe` (`Mask128`), motor binário ortogonal, parser `.xlsx` em stdlib e integração `servicebus3`:
 
 ```bash
 pytest -v
@@ -197,26 +247,30 @@ pytest -v
 
 ### Saída Real Verificada:
 ```text
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_01_database_integrity PASSED                              [  5%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_02_chi_square_uniformity_properties PASSED                [ 11%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_03_game_theory_anti_collision_scoring PASSED              [ 16%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_04_covering_design_mathematical_guarantee_quadra PASSED   [ 22%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_05_covering_design_quina_guarantee PASSED                 [ 27%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_06_covering_design_edge_cases PASSED                      [ 33%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_07_arbitrage_ginther_mandel_calculations PASSED           [ 38%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_08_generator_modes_and_gaussian_filter PASSED             [ 44%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_09_mahalanobis_and_shannon_entropy PASSED                 [ 50%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_10_backtest_accuracy PASSED                               [ 55%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_11_exports_csv_and_pdf PASSED                             [ 61%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_12_thread_safe_concurrency PASSED                         [ 66%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_13_caixa_servicebus3_and_fallback PASSED                  [ 72%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_14_mega_da_virada_ao_vivo_parser PASSED                   [ 77%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_15_xlsx_bulk_parser PASSED                                [ 83%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_16_native_csharp_kernel_covering_guarantee PASSED         [ 88%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_17_parametros_oficiais_e_custo_lote PASSED                [ 94%]
-tests/test_engine.py::TestMegaSenaEngineComprehensive::test_18_mahalanobis_full_rank_and_chi2_correction PASSED       [100%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_01_database_integrity PASSED                              [  4%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_02_chi_square_uniformity_properties PASSED                [  9%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_03_game_theory_anti_collision_scoring PASSED              [ 13%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_04_covering_design_mathematical_guarantee_quadra PASSED   [ 18%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_05_covering_design_quina_guarantee PASSED                 [ 22%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_06_covering_design_edge_cases PASSED                      [ 27%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_07_arbitrage_ginther_mandel_calculations PASSED           [ 31%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_08_generator_modes_and_gaussian_filter PASSED             [ 36%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_09_mahalanobis_and_shannon_entropy PASSED                 [ 40%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_10_backtest_accuracy PASSED                               [ 45%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_11_exports_csv_and_pdf PASSED                             [ 50%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_12_thread_safe_concurrency PASSED                         [ 54%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_13_caixa_servicebus3_and_fallback PASSED                  [ 59%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_14_mega_da_virada_ao_vivo_parser PASSED                   [ 63%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_15_xlsx_bulk_parser PASSED                                [ 68%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_16_native_csharp_kernel_covering_guarantee PASSED         [ 72%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_17_parametros_oficiais_e_custo_lote PASSED                [ 77%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_18_mahalanobis_full_rank_and_chi2_correction PASSED       [ 81%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_19_community_api_fallback_normalization PASSED            [ 86%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_20_sindicato_bolao_and_pruned_covering PASSED             [ 90%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_21_kelly_criterion_kolmogorov_and_montecarlo PASSED       [ 95%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_22_quina_and_binary_orthogonal_engine PASSED              [100%]
 
-============================= 18 passed in 1.15s ==============================
+============================= 22 passed in 2.26s ==============================
 ```
 
 ---

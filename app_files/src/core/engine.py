@@ -19,6 +19,7 @@ import csv
 import ssl
 import time
 import math
+import zlib
 import random
 import logging
 import zipfile
@@ -49,6 +50,7 @@ CAIXA_PARAMS_URL = "https://loterias.caixa.gov.br/Style%20Library/json/params.tx
 CAIXA_API_BASE = "https://servicebus3.caixa.gov.br/portaldeloterias"
 CAIXA_API_URL = f"{CAIXA_API_BASE}/api/megasena"
 CAIXA_API_FALLBACK_URL = "https://servicebus2.caixa.gov.br/portaldeloterias/api/megasena"
+COMMUNITY_API_FALLBACK_URL = "https://loteriascaixa-api.herokuapp.com/api/megasena"
 CAIXA_SIMULACAO_URL = (
     "https://www.loteriasonline.caixa.gov.br/silce-servico-rest/rest/v1/"
     "cGFyYW1ldHJvcy1zaW11bGFjYW8v"
@@ -125,27 +127,38 @@ class MegaSenaEngine:
         self._api_base = CAIXA_API_BASE
         return self._api_base
 
-    def _candidatos_megasena_url(self) -> List[str]:
+    def _candidatos_megasena_url(self, slug: str = "megasena") -> List[str]:
         base = self._resolver_api_base()
-        primary = f"{base}/api/megasena"
+        primary = f"{base}/api/{slug}"
         urls = [primary]
-        if CAIXA_API_URL not in urls:
-            urls.append(CAIXA_API_URL)
-        if CAIXA_API_FALLBACK_URL not in urls:
-            urls.append(CAIXA_API_FALLBACK_URL)
+        if slug == "megasena":
+            for candidate in (CAIXA_API_URL, CAIXA_API_FALLBACK_URL, COMMUNITY_API_FALLBACK_URL):
+                if candidate not in urls:
+                    urls.append(candidate)
+        else:
+            urls.append(f"https://servicebus2.caixa.gov.br/portaldeloterias/api/{slug}")
+            urls.append(f"https://loteriascaixa-api.herokuapp.com/api/{slug}")
         return urls
 
-    def obter_ultimo_resultado_online(self) -> Optional[Dict[str, Any]]:
-        for base_url in self._candidatos_megasena_url():
+    def obter_ultimo_resultado_online(self, modalidade: str = "MEGA_SENA") -> Optional[Dict[str, Any]]:
+        slug = "quina" if modalidade.upper() == "QUINA" else "megasena"
+        for base_url in self._candidatos_megasena_url(slug):
             try:
-                data = self._http_get_json(base_url, timeout=8)
+                raw_data = self._http_get_json(base_url, timeout=8)
+                data = raw_data[0] if isinstance(raw_data, list) and raw_data else raw_data
+                if not isinstance(data, dict):
+                    continue
+                dezenas_raw = data.get("listaDezenas") or data.get("dezenas") or []
+                numero = int(data.get("numero") or data.get("concurso") or 0)
+                if numero <= 0 or not dezenas_raw:
+                    continue
                 return {
-                    "numero": int(data.get("numero", 0)),
-                    "data": data.get("dataApuracao", ""),
-                    "dezenas": sorted([int(x) for x in data.get("listaDezenas", [])]),
-                    "acumulado": bool(data.get("acumulado", False)),
-                    "premio_estimado": float(data.get("valorEstimadoProximoConcurso", 0.0)),
-                    "proximo_concurso_data": data.get("dataProximoConcurso", ""),
+                    "numero": numero,
+                    "data": data.get("dataApuracao") or data.get("data") or "",
+                    "dezenas": sorted([int(x) for x in dezenas_raw]),
+                    "acumulado": bool(data.get("acumulado", data.get("acumulou", False))),
+                    "premio_estimado": float(data.get("valorEstimadoProximoConcurso") or data.get("valorAcumuladoProximoConcurso") or 0.0),
+                    "proximo_concurso_data": data.get("dataProximoConcurso") or data.get("dataProxConcurso") or "",
                     "indicador_concurso_especial": int(data.get("indicadorConcursoEspecial", 0) or 0),
                     "titulo_especial": data.get("tituloConcursoEspecial") or "",
                     "valor_acumulado_especial": float(data.get("valorAcumuladoConcursoEspecial", 0.0) or 0.0),
@@ -438,6 +451,16 @@ class MegaSenaEngine:
         ev_com_anticolisao = (premio_sena / 1.5) * p_sena + ev_quina + ev_quadra - custo_aposta
         ev_sem_anticolisao = (premio_sena / 18.0) * p_sena + ev_quina + ev_quadra - custo_aposta
 
+        # Critério de Kelly (Edward Thorp) ajustado para eventos raros multi-faixa
+        var_retorno = (
+            p_sena * (premio_sena - custo_aposta) ** 2
+            + p_quina * (premio_quina_medio - custo_aposta) ** 2
+            + p_quadra * (premio_quadra_medio - custo_aposta) ** 2
+            + (1.0 - p_sena - p_quina - p_quadra) * (custo_aposta ** 2)
+        )
+        kelly_f = max(0.0, min(1.0, (ev_liquido * custo_aposta) / var_retorno)) if ev_liquido > 0 and var_retorno > 0 else 0.0
+        kelly_quarter = kelly_f * 0.25
+
         if ev_liquido > 0:
             status_arbitragem = "ARBITRAGEM MATEMÁTICA FAVORÁVEL (E[X] > 0)"
             diretriz = (
@@ -462,8 +485,299 @@ class MegaSenaEngine:
             "breakeven_jackpot": round(breakeven_jackpot, 2),
             "ev_com_estrategia_anticolisao": round(ev_com_anticolisao, 2),
             "ev_sem_estrategia_aniversarios": round(ev_sem_anticolisao, 2),
+            "kelly_fracao_otima_pct": round(kelly_f * 100.0, 8),
+            "kelly_quarto_pct": round(kelly_quarter * 100.0, 8),
             "status_arbitragem": status_arbitragem,
             "diretriz_executiva": diretriz
+        }
+
+    def auditar_incompressibilidade_kolmogorov(self) -> Dict[str, Any]:
+        """Mede a incompressibilidade algorítmica da série histórica (Kolmogorov/zlib) vs controle embaralhado."""
+        with self._lock:
+            if not self.concursos:
+                return {"total_concursos": 0, "razao_real": 1.0, "razao_controle": 1.0, "incompressivel": True}
+            raw_real = bytes(d for c in self.concursos for d in c)
+            shuffled = [list(c) for c in self.concursos]
+            rng = random.Random(42)
+            rng.shuffle(shuffled)
+            raw_ctrl = bytes(d for c in shuffled for d in c)
+
+            comp_real = len(zlib.compress(raw_real, level=9))
+            comp_ctrl = len(zlib.compress(raw_ctrl, level=9))
+            razao_real = comp_real / len(raw_real)
+            razao_ctrl = comp_ctrl / len(raw_ctrl)
+            return {
+                "total_concursos": len(self.concursos),
+                "bytes_brutos": len(raw_real),
+                "bytes_comprimidos": comp_real,
+                "razao_real": round(razao_real, 4),
+                "razao_controle": round(razao_ctrl, 4),
+                "delta_estrutura": round(abs(razao_real - razao_ctrl), 4),
+                "incompressivel": abs(razao_real - razao_ctrl) < 0.03,
+            }
+
+    def simular_monte_carlo(
+        self,
+        jogo: List[int],
+        sorteios: int = 100000,
+        max_num: int = 60,
+        k: int = 6,
+    ) -> Dict[str, Any]:
+        """Executa simulação Monte Carlo de alta velocidade no kernel nativo C# (/unsafe Mask128)."""
+        taxa_q4_teo = (
+            (375.0 / 24040016.0) * 100.0
+            if max_num == 80 and k == 5
+            else (21465.0 / 50063860.0) * 100.0
+        )
+        kernel_exe = self._ensure_native_kernel()
+        if kernel_exe:
+            try:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                jogo_csv = ",".join(str(d) for d in sorted(jogo))
+                proc = subprocess.run(
+                    [str(kernel_exe), "montecarlo", str(sorteios), jogo_csv, str(max_num), str(k)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    creationflags=flags,
+                )
+                parts = proc.stdout.strip().split(";")
+                if len(parts) == 6:
+                    n = int(parts[0])
+                    t3, t4, t5, t6 = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+                    ms = float(parts[5])
+                    return {
+                        "sorteios": n,
+                        "ternos": t3,
+                        "quadras": t4,
+                        "quinas": t5,
+                        "senas": t6,
+                        "taxa_quadra_pct": round((t4 / n) * 100.0, 5),
+                        "taxa_quadra_teorica_pct": round(taxa_q4_teo, 5),
+                        "tempo_ms": ms,
+                        "motor": "C# /unsafe x64 (Mask128)",
+                    }
+            except Exception as e:
+                logging.warning(f"Fallback Monte Carlo Python: {e}")
+
+        t0 = time.perf_counter()
+        j_mask = sum(1 << (d - 1) for d in jogo)
+        t3 = t4 = t5 = t6 = 0
+        pop = range(max_num)
+        for _ in range(sorteios):
+            draw = random.sample(pop, k)
+            d_mask = 0
+            for d in draw:
+                d_mask |= (1 << d)
+            hits = (j_mask & d_mask).bit_count()
+            if hits >= 3:
+                if hits == 3:
+                    t3 += 1
+                elif hits == 4:
+                    t4 += 1
+                elif hits == 5:
+                    t5 += 1
+                else:
+                    t6 += 1
+        ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        return {
+            "sorteios": sorteios,
+            "ternos": t3,
+            "quadras": t4,
+            "quinas": t5,
+            "senas": t6,
+            "taxa_quadra_pct": round((t4 / sorteios) * 100.0, 5),
+            "taxa_quadra_teorica_pct": round(taxa_q4_teo, 5),
+            "tempo_ms": ms,
+            "motor": "Python bitmask",
+        }
+
+    # -------------------------------------------------------------
+    # 2B. SUPORTE COMPLETO À QUINA (01-80, k=5, R$ 3,00)
+    # -------------------------------------------------------------
+    def calcular_arbitragem_quina(
+        self,
+        premio_estimado: float,
+        custo_aposta: float = 3.0,
+        tipo_concurso: str = "especial",
+    ) -> Dict[str, Any]:
+        """Modelo hipergeométrico exato da Quina: Ω = C(80,5) = 24.040.016."""
+        omega = 24040016.0
+        p_quina = 1.0 / omega
+        p_quadra = 375.0 / omega
+        p_terno = 27750.0 / omega
+        p_duque = 675250.0 / omega
+
+        premio_quadra = 9500.0 if tipo_concurso == "normal" else 15000.0
+        premio_terno = 135.0 if tipo_concurso == "normal" else 200.0
+        premio_duque = 5.0
+
+        ev_bruto = (
+            premio_estimado * p_quina
+            + premio_quadra * p_quadra
+            + premio_terno * p_terno
+            + premio_duque * p_duque
+        )
+        ev_liquido = ev_bruto - custo_aposta
+        roi_percent = (ev_liquido / custo_aposta) * 100.0 if custo_aposta > 0 else 0.0
+        ev_sub = premio_quadra * p_quadra + premio_terno * p_terno + premio_duque * p_duque
+        breakeven_jackpot = max(0.0, (custo_aposta - ev_sub) * omega)
+
+        var_ret = (
+            p_quina * (premio_estimado - custo_aposta) ** 2
+            + p_quadra * (premio_quadra - custo_aposta) ** 2
+            + p_terno * (premio_terno - custo_aposta) ** 2
+            + p_duque * (premio_duque - custo_aposta) ** 2
+            + (1.0 - p_quina - p_quadra - p_terno - p_duque) * (custo_aposta ** 2)
+        )
+        kelly_f = max(0.0, min(1.0, (ev_liquido * custo_aposta) / var_ret)) if ev_liquido > 0 and var_ret > 0 else 0.0
+
+        status = (
+            "ARBITRAGEM QUINA FAVORÁVEL (E[X] > 0)"
+            if ev_liquido > 0
+            else "VALOR ESPERADO NEGATIVO (Casa em Vantagem)"
+        )
+        return {
+            "modalidade": "QUINA",
+            "premio_analisado": premio_estimado,
+            "custo_aposta": custo_aposta,
+            "valor_esperado_bruto": round(ev_bruto, 2),
+            "valor_esperado_liquido": round(ev_liquido, 2),
+            "roi_esperado_percent": round(roi_percent, 1),
+            "breakeven_jackpot": round(breakeven_jackpot, 2),
+            "ev_com_estrategia_anticolisao": round((premio_estimado / 1.5) * p_quina + ev_sub - custo_aposta, 2),
+            "ev_sem_estrategia_aniversarios": round((premio_estimado / 12.0) * p_quina + ev_sub - custo_aposta, 2),
+            "kelly_fracao_otima_pct": round(kelly_f * 100.0, 8),
+            "kelly_quarto_pct": round(kelly_f * 25.0, 8),
+            "status_arbitragem": status,
+            "diretriz_executiva": (
+                f"Espaço amostral Ω = 24.040.016. Ponto de equilíbrio da Quina ocorre em "
+                f"R$ {breakeven_jackpot / 1e6:.1f}M."
+            ),
+        }
+
+    def gerar_jogos_quina(
+        self,
+        quantidade: int = 6,
+        modo: str = "anti_colisao",
+        min_soma: int = 120,
+        max_soma: int = 285,
+    ) -> List[List[int]]:
+        """Gera jogos estratégicos da Quina (5 dezenas em 1..80) seguindo o volante oficial."""
+        jogos: List[List[int]] = []
+        vistos: Set[Tuple[int, ...]] = set()
+        pesos = [2.2 if d > 31 else 1.0 for d in range(1, 81)] if modo == "anti_colisao" else [1.0] * 80
+        tentativas = 0
+        while len(jogos) < quantidade and tentativas < quantidade * 400:
+            tentativas += 1
+            escolhidos: Set[int] = set()
+            while len(escolhidos) < 5:
+                escolhidos.add(random.choices(range(1, 81), weights=pesos, k=1)[0])
+            cand = sorted(escolhidos)
+            soma = sum(cand)
+            if not (min_soma <= soma <= max_soma):
+                continue
+            if modo == "anti_colisao" and any(cand[i + 1] - cand[i] == 1 for i in range(4)):
+                continue
+            key = tuple(cand)
+            if key not in vistos:
+                vistos.add(key)
+                jogos.append(cand)
+        return jogos
+
+    def gerar_fechamento_quina(self, dezenas_pool: List[int], garantia: str = "terno") -> List[List[int]]:
+        """Gera fechamento combinatório C(v, 5, t) para Quina (t=3 Terno ou t=4 Quadra) no kernel Mask128."""
+        pool = sorted(list(set(dezenas_pool)))
+        v = len(pool)
+        if v < 5:
+            raise ValueError(f"O pool da Quina deve ter pelo menos 5 dezenas. Fornecido: {v}")
+        if any(d < 1 or d > 80 for d in pool):
+            raise ValueError("As dezenas da Quina devem estar entre 1 e 80.")
+        if v == 5:
+            return [pool]
+
+        t_garantia = 4 if garantia == "quadra" else 3
+        kernel_exe = self._ensure_native_kernel()
+        if kernel_exe and v >= 7:
+            try:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                pool_csv = ",".join(str(d) for d in pool)
+                proc = subprocess.run(
+                    [str(kernel_exe), "cover", str(t_garantia), pool_csv, "5"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    creationflags=flags,
+                )
+                jogos = [
+                    [int(x) for x in line.strip().split(",")]
+                    for line in proc.stdout.splitlines()
+                    if line.strip()
+                ]
+                if jogos:
+                    return jogos
+            except Exception as e:
+                logging.warning(f"Fallback bitmask Python Quina: {e}")
+
+        todos_blocos = [(sum(1 << (d - 1) for d in b), list(b)) for b in itertools.combinations(pool, 5)]
+        restantes = [sum(1 << (d - 1) for d in c) for c in itertools.combinations(pool, t_garantia)]
+        selecionados: List[List[int]] = []
+        while restantes:
+            melhor_idx = max(
+                range(len(todos_blocos)),
+                key=lambda idx: sum(1 for tm in restantes if (todos_blocos[idx][0] & tm) == tm),
+            )
+            b_mask, b_list = todos_blocos.pop(melhor_idx)
+            selecionados.append(b_list)
+            restantes = [tm for tm in restantes if (b_mask & tm) != tm]
+        return selecionados
+
+    def gerar_jogos_ortogonais_binarios(
+        self,
+        quantidade: int = 6,
+        modalidade: str = "MEGA_SENA",
+    ) -> Dict[str, Any]:
+        """
+        Motor Binário 0101101 (Álgebra em F_2^N):
+        Maximiza a distância de Hamming mínima d_H(A, B) = (A ^ B).bit_count()
+        entre todos os volantes da carteira para eliminar sobreposição de bits ativos.
+        """
+        is_quina = modalidade.upper() == "QUINA"
+        k = 5 if is_quina else 6
+        max_num = 80 if is_quina else 60
+        candidatos = (
+            self.gerar_jogos_quina(quantidade=max(quantidade * 8, 40), modo="anti_colisao")
+            if is_quina
+            else self.gerar_jogos(quantidade=max(quantidade * 8, 40), modo="anti_colisao")
+        )
+        if not candidatos:
+            return {"jogos": [], "hamming_medio": 0.0, "hamming_minimo": 0}
+
+        masks = [(sum(1 << (d - 1) for d in j), j) for j in candidatos]
+        escolhidos = [masks.pop(0)]
+
+        while len(escolhidos) < quantidade and masks:
+            best_idx = max(
+                range(len(masks)),
+                key=lambda idx: min((masks[idx][0] ^ e_m).bit_count() for e_m, _ in escolhidos),
+            )
+            escolhidos.append(masks.pop(best_idx))
+
+        jogos = [j for _, j in escolhidos]
+        dists = [
+            (escolhidos[i][0] ^ escolhidos[j][0]).bit_count()
+            for i in range(len(escolhidos))
+            for j in range(i + 1, len(escolhidos))
+        ]
+        return {
+            "modalidade": "QUINA" if is_quina else "MEGA_SENA",
+            "espaco_bits": max_num,
+            "peso_hamming": k,
+            "jogos": jogos,
+            "hamming_minimo": min(dists) if dists else 0,
+            "hamming_medio": round(sum(dists) / len(dists), 2) if dists else 0.0,
         }
 
     # -------------------------------------------------------------

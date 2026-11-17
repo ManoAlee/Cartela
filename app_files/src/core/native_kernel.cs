@@ -1,14 +1,41 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 
 namespace CartelaNativeKernel
 {
+    internal struct Mask128
+    {
+        public ulong Lo;
+        public ulong Hi;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetBit(int num1Based)
+        {
+            int bit = num1Based - 1;
+            if (bit < 64) Lo |= (1UL << bit);
+            else Hi |= (1UL << (bit - 64));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool ContainsAll(Mask128 target)
+        {
+            return (Lo & target.Lo) == target.Lo && (Hi & target.Hi) == target.Hi;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int IntersectPopCount(Mask128 other)
+        {
+            return Program.PopCount64(Lo & other.Lo) + Program.PopCount64(Hi & other.Hi);
+        }
+    }
+
     internal static unsafe class Program
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int PopCount64(ulong x)
+        internal static int PopCount64(ulong x)
         {
             x = x - ((x >> 1) & 0x5555555555555555UL);
             x = (x & 0x3333333333333333UL) + ((x >> 2) & 0x3333333333333333UL);
@@ -29,7 +56,7 @@ namespace CartelaNativeKernel
             return res;
         }
 
-        private static void GenerateCombinations(int[] pool, int k, ulong[] output)
+        private static void GenerateCombinations(int[] pool, int k, Mask128[] output)
         {
             int n = pool.Length;
             int* idx = stackalloc int[k];
@@ -38,10 +65,10 @@ namespace CartelaNativeKernel
             int outPos = 0;
             while (true)
             {
-                ulong mask = 0;
+                Mask128 mask = new Mask128();
                 for (int i = 0; i < k; i++)
                 {
-                    mask |= (1UL << (pool[idx[i]] - 1));
+                    mask.SetBit(pool[idx[i]]);
                 }
                 output[outPos++] = mask;
 
@@ -57,26 +84,27 @@ namespace CartelaNativeKernel
             }
         }
 
-        private static int RunCover(int t, int[] pool)
+        private static int RunCover(int t, int k, int[] pool)
         {
             int v = pool.Length;
-            long numBlocks = Binomial(v, 6);
+            long numBlocks = Binomial(v, k);
             long numTargets = Binomial(v, t);
             if (numBlocks <= 0 || numTargets <= 0 || numBlocks > int.MaxValue || numTargets > int.MaxValue)
             {
                 return 2;
             }
 
-            ulong[] blocks = new ulong[numBlocks];
-            ulong[] targets = new ulong[numTargets];
-            GenerateCombinations(pool, 6, blocks);
+            Mask128[] blocks = new Mask128[numBlocks];
+            Mask128[] targets = new Mask128[numTargets];
+            GenerateCombinations(pool, k, blocks);
             GenerateCombinations(pool, t, targets);
 
             bool[] usedBlock = new bool[numBlocks];
+            var selectedIndices = new List<int>();
             int remaining = (int)numTargets;
 
-            fixed (ulong* pBlocks = blocks)
-            fixed (ulong* pTargets = targets)
+            fixed (Mask128* pBlocks = blocks)
+            fixed (Mask128* pTargets = targets)
             {
                 while (remaining > 0)
                 {
@@ -86,12 +114,11 @@ namespace CartelaNativeKernel
                     for (int b = 0; b < (int)numBlocks; b++)
                     {
                         if (usedBlock[b]) continue;
-                        ulong bMask = pBlocks[b];
+                        Mask128 bMask = pBlocks[b];
                         int hits = 0;
                         for (int i = 0; i < remaining; i++)
                         {
-                            ulong tMask = pTargets[i];
-                            if ((bMask & tMask) == tMask) hits++;
+                            if (bMask.ContainsAll(pTargets[i])) hits++;
                         }
                         if (hits > bestCount)
                         {
@@ -104,43 +131,124 @@ namespace CartelaNativeKernel
                     if (bestIdx < 0 || bestCount == 0) break;
 
                     usedBlock[bestIdx] = true;
-                    ulong chosen = pBlocks[bestIdx];
+                    selectedIndices.Add(bestIdx);
+                    Mask128 chosen = pBlocks[bestIdx];
 
-                    // Emit sorted dezenas for chosen mask
-                    int emitted = 0;
-                    for (int bit = 0; bit < 60; bit++)
+                    int writeIdx = 0;
+                    for (int i = 0; i < remaining; i++)
                     {
-                        if ((chosen & (1UL << bit)) != 0)
+                        if (!chosen.ContainsAll(pTargets[i]))
+                        {
+                            pTargets[writeIdx++] = pTargets[i];
+                        }
+                    }
+                    remaining = writeIdx;
+                }
+
+                // Regenerate targets for redundancy pruning & 2-for-1 local reduction
+                GenerateCombinations(pool, t, targets);
+                int totalT = (int)numTargets;
+
+                for (int s = selectedIndices.Count - 1; s >= 0; s--)
+                {
+                    int candidateBlock = selectedIndices[s];
+                    bool redundant = true;
+                    for (int ti = 0; ti < totalT; ti++)
+                    {
+                        Mask128 tm = pTargets[ti];
+                        if (!pBlocks[candidateBlock].ContainsAll(tm)) continue;
+                        bool coveredElsewhere = false;
+                        for (int o = 0; o < selectedIndices.Count; o++)
+                        {
+                            if (o == s) continue;
+                            if (pBlocks[selectedIndices[o]].ContainsAll(tm))
+                            {
+                                coveredElsewhere = true;
+                                break;
+                            }
+                        }
+                        if (!coveredElsewhere) { redundant = false; break; }
+                    }
+                    if (redundant) selectedIndices.RemoveAt(s);
+                }
+
+                if (selectedIndices.Count >= 3 && numBlocks <= 8500)
+                {
+                    bool improved = true;
+                    while (improved)
+                    {
+                        improved = false;
+                        for (int i = 0; i < selectedIndices.Count && !improved; i++)
+                        {
+                            for (int j = i + 1; j < selectedIndices.Count && !improved; j++)
+                            {
+                                var uncovered = new List<Mask128>();
+                                for (int ti = 0; ti < totalT; ti++)
+                                {
+                                    Mask128 tm = pTargets[ti];
+                                    bool cov = false;
+                                    for (int o = 0; o < selectedIndices.Count; o++)
+                                    {
+                                        if (o == i || o == j) continue;
+                                        if (pBlocks[selectedIndices[o]].ContainsAll(tm)) { cov = true; break; }
+                                    }
+                                    if (!cov) uncovered.Add(tm);
+                                }
+                                if (uncovered.Count == 0)
+                                {
+                                    selectedIndices.RemoveAt(j);
+                                    selectedIndices.RemoveAt(i);
+                                    improved = true;
+                                    break;
+                                }
+                                for (int b = 0; b < (int)numBlocks; b++)
+                                {
+                                    Mask128 bm = pBlocks[b];
+                                    bool coversAll = true;
+                                    for (int u = 0; u < uncovered.Count; u++)
+                                    {
+                                        if (!bm.ContainsAll(uncovered[u])) { coversAll = false; break; }
+                                    }
+                                    if (coversAll)
+                                    {
+                                        selectedIndices[i] = b;
+                                        selectedIndices.RemoveAt(j);
+                                        improved = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (int s = 0; s < selectedIndices.Count; s++)
+                {
+                    Mask128 chosen = pBlocks[selectedIndices[s]];
+                    int emitted = 0;
+                    for (int num = 1; num <= 80; num++)
+                    {
+                        int bit = num - 1;
+                        bool on = bit < 64 ? ((chosen.Lo & (1UL << bit)) != 0) : ((chosen.Hi & (1UL << (bit - 64))) != 0);
+                        if (on)
                         {
                             if (emitted > 0) Console.Write(',');
-                            Console.Write(bit + 1);
+                            Console.Write(num);
                             emitted++;
                         }
                     }
                     Console.WriteLine();
-
-                    // Compact uncovered targets in-place (O(remaining))
-                    int writeIdx = 0;
-                    for (int i = 0; i < remaining; i++)
-                    {
-                        ulong tMask = pTargets[i];
-                        if ((chosen & tMask) != tMask)
-                        {
-                            pTargets[writeIdx++] = tMask;
-                        }
-                    }
-                    remaining = writeIdx;
                 }
             }
             return 0;
         }
 
-        private static int RunBacktest(string jsonPath, ulong gameMask)
+        private static int RunBacktest(string jsonPath, Mask128 gameMask)
         {
             if (!File.Exists(jsonPath)) return 3;
             string raw = File.ReadAllText(jsonPath);
-            var masksList = new List<ulong>(4096);
-            ulong curMask = 0;
+            var masksList = new List<Mask128>(4096);
+            Mask128 curMask = new Mask128();
             int curNum = 0;
             int count = 0;
             bool inNum = false;
@@ -157,12 +265,12 @@ namespace CartelaNativeKernel
                 {
                     if (curNum >= 1 && curNum <= 60)
                     {
-                        curMask |= (1UL << (curNum - 1));
+                        curMask.SetBit(curNum);
                         count++;
                         if (count == 6)
                         {
                             masksList.Add(curMask);
-                            curMask = 0;
+                            curMask = new Mask128();
                             count = 0;
                         }
                     }
@@ -171,16 +279,16 @@ namespace CartelaNativeKernel
                 }
             }
 
-            ulong[] masks = masksList.ToArray();
+            Mask128[] masks = masksList.ToArray();
             int n = masks.Length;
             int quadras = 0, quinas = 0, senas = 0;
             var hitsList = new List<string>();
 
-            fixed (ulong* pBase = masks)
+            fixed (Mask128* pBase = masks)
             {
                 for (int i = 0; i < n; i++)
                 {
-                    int hits = PopCount64(pBase[i] & gameMask);
+                    int hits = pBase[i].IntersectPopCount(gameMask);
                     if (hits >= 4)
                     {
                         if (hits == 4) quadras++;
@@ -192,6 +300,51 @@ namespace CartelaNativeKernel
             }
 
             Console.WriteLine(string.Format("{0};{1};{2};{3};{4}", n, quadras, quinas, senas, string.Join(",", hitsList)));
+            return 0;
+        }
+
+        private static int RunMonteCarlo(long draws, Mask128 gameMask, int maxNum, int k)
+        {
+            int* pool = stackalloc int[maxNum];
+            for (int i = 0; i < maxNum; i++) pool[i] = i + 1;
+
+            ulong rng = (ulong)DateTime.UtcNow.Ticks ^ 0x9E3779B97F4A7C15UL;
+            if (rng == 0) rng = 0x9E3779B97F4A7C15UL;
+
+            long tier3 = 0, tier4 = 0, tier5 = 0, tier6 = 0;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            for (long d = 0; d < draws; d++)
+            {
+                Mask128 drawMask = new Mask128();
+                for (int i = 0; i < k; i++)
+                {
+                    rng ^= rng >> 12;
+                    rng ^= rng << 25;
+                    rng ^= rng >> 27;
+                    ulong r = rng * 0x2545F4914F6CDD1DUL;
+                    int j = i + (int)(r % (ulong)(maxNum - i));
+                    int tmp = pool[i];
+                    pool[i] = pool[j];
+                    pool[j] = tmp;
+                    drawMask.SetBit(pool[i]);
+                }
+
+                int hits = drawMask.IntersectPopCount(gameMask);
+                if (hits >= 3)
+                {
+                    if (hits == 3) tier3++;
+                    else if (hits == 4) tier4++;
+                    else if (hits == 5) tier5++;
+                    else tier6++;
+                }
+            }
+            sw.Stop();
+
+            Console.WriteLine(string.Format(
+                CultureInfo.InvariantCulture,
+                "{0};{1};{2};{3};{4};{5:0.00}",
+                draws, tier3, tier4, tier5, tier6, sw.Elapsed.TotalMilliseconds));
             return 0;
         }
 
@@ -215,18 +368,21 @@ namespace CartelaNativeKernel
             {
                 int t = int.Parse(args[1]);
                 int[] pool = ParsePool(args[2]);
-                return RunCover(t, pool);
+                int k = args.Length >= 4 ? int.Parse(args[3]) : 6;
+                return RunCover(t, k, pool);
             }
-            if (mode == "backtest")
+            if (mode == "backtest" || mode == "montecarlo")
             {
-                string jsonPath = args[1];
                 int[] nums = ParsePool(args[2]);
-                ulong mask = 0;
+                Mask128 mask = new Mask128();
                 for (int i = 0; i < nums.Length; i++)
                 {
-                    if (nums[i] >= 1 && nums[i] <= 60) mask |= (1UL << (nums[i] - 1));
+                    if (nums[i] >= 1 && nums[i] <= 80) mask.SetBit(nums[i]);
                 }
-                return RunBacktest(jsonPath, mask);
+                if (mode == "backtest") return RunBacktest(args[1], mask);
+                int maxNum = args.Length >= 4 ? int.Parse(args[3]) : 60;
+                int k = args.Length >= 5 ? int.Parse(args[4]) : 6;
+                return RunMonteCarlo(long.Parse(args[1]), mask, maxNum, k);
             }
             return 1;
         }

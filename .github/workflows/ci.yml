@@ -36,6 +36,15 @@ jobs:
         run: |
           python -m compileall -q .
 
+      - name: Compile C# Native Kernel & WPF UI (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          set CSC=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
+          set WPF=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF
+          "%CSC%" /nologo /unsafe /optimize+ /platform:x64 /out:app_files\src\core\cartela_kernel.exe app_files\src\core\native_kernel.cs
+          "%CSC%" /nologo /target:winexe /unsafe /optimize+ /platform:x64 /win32icon:app_files\assets\cartela_logo.ico /r:"%WPF%\PresentationFramework.dll" /r:"%WPF%\PresentationCore.dll" /r:"%WPF%\WindowsBase.dll" /r:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Xaml.dll" /r:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Web.Extensions.dll" /out:CartelaUI.exe app_files\src\ui_csharp\CartelaUI.cs
+
       - name: Run Formal Mathematical Test Suite
         run: |
           python -m unittest discover -v tests
