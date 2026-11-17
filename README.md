@@ -1,11 +1,14 @@
-# 🎱 Cartela — Advanced Mathematical Lottery Intelligence Lab
+<div align="center">
+  <img src="app_files/assets/cartela_logo.png" alt="Cartela Logo" width="96" height="96" />
+  <h1>Cartela — Advanced Mathematical Lottery Intelligence Lab</h1>
+</div>
 
 [![CI Pipeline](https://github.com/ManoAlee/Cartela/actions/workflows/ci.yml/badge.svg)](https://github.com/ManoAlee/Cartela/actions)
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
-[![Test Suite](https://img.shields.io/badge/tests-12%2F12%20passing-success.svg?logo=checkmarx&logoColor=white)](tests/)
-[![Data Source](https://img.shields.io/badge/Caixa%20Econ%C3%B4mica%20Federal-3.063%2B%20Concursos-0284c7.svg)](https://loterias.caixa.gov.br/)
+[![Native UI & Kernel](https://img.shields.io/badge/C%23%20WPF%20%2B%20%2Funsafe-x64%20Native-16a34a.svg)](app_files/src/ui_csharp/CartelaUI.cs)
+[![Test Suite](https://img.shields.io/badge/tests-18%2F18%20passing-success.svg?logo=checkmarx&logoColor=white)](tests/)
+[![Data Source](https://img.shields.io/badge/Caixa%20servicebus3-3.086%2B%20Concursos-0284c7.svg)](https://loterias.caixa.gov.br/)
 [![Statistical Rigor](https://img.shields.io/badge/NIST%20SP%20800--22-Validated-10b981.svg)](https://csrc.nist.gov/publications/detail/sp/800-22/rev-1a/final)
-[![Design System](https://img.shields.io/badge/UI-Clean%20Slate%20Minimalist-f59e0b.svg)](app_files/src/app/gui.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-slate.svg)](LICENSE)
 
 > **Engenharia Matemática Aplicada, Teoria dos Jogos e Covering Designs Combinatórios para Loterias Brasileiras (Mega-Sena & Mega da Virada).**  
@@ -53,27 +56,29 @@ Se a probabilidade física é invariante, **onde reside a vantagem matemática e
 ```mermaid
 flowchart TD
     subgraph Data Layer
-        API["Caixa Econômica REST API"] -->|Sincronização| Sync["Sync Worker"]
-        Sync -->|JSON Cache Local| Cache[("mega_cache.json (3.063 Concursos)")]
+        Params["params.txt (Descoberta Dinâmica)"] --> API["Caixa servicebus3 REST + .xlsx Bulk"]
+        API -->|Sincronização TLS| Sync["MegaSenaEngine (Thread-Safe RLock)"]
+        Sync -->|JSON Cache Local| Cache[("mega_cache.json")]
         Sync -->|Histórico CSV| CSV[("mega_history.csv")]
     end
 
-    subgraph Core Mathematical Engine
-        Cache --> Engine["MegaSenaEngine (Thread-Safe RLock)"]
-        Engine --> NIST["Auditoria Qui-Quadrado (NIST SP 800-22)"]
-        Engine --> Mahalanobis["Métrica 8D Mahalanobis & Shannon"]
-        Engine --> GameTheory["Algoritmo Anti-Colisão (Fuga de 1-31)"]
-        Engine --> Mandel["Covering Designs C(v, k, t) - Greedy Set Cover"]
-        Engine --> Ginther["Radar de Arbitragem E[X] (Breakeven Analysis)"]
+    subgraph Core Mathematical & Native Engine
+        Sync --> NIST["Auditoria Qui-Quadrado (NIST SP 800-22 + Correção 59/54)"]
+        Sync --> Mahalanobis["Métrica 7D Full-Rank Mahalanobis & Shannon"]
+        Sync --> GameTheory["Algoritmo Anti-Colisão (Fuga de 1-31)"]
+        Sync --> Kernel["Kernel Nativo C# /unsafe (ulong* + SWAR PopCount64)"]
+        Kernel --> Mandel["Covering Designs C(v, k, t)"]
+        Sync --> Ginther["Radar de Arbitragem E[X] (Breakeven & Mega da Virada)"]
     end
 
-    subgraph Presentation & UI
-        Engine --> UI["CartelaApp (Dark Slate Minimalist GUI)"]
-        UI --> Tab1["⚡ Gerador Estratégico"]
-        UI --> Tab2["📐 Fechamentos C(v,k,t)"]
-        UI --> Tab3["💎 Arbitragem E[X]"]
-        UI --> Tab4["🔍 Conferência & Backtest"]
-        UI --> Export["Exportador Vetorial PDF / CSV"]
+    subgraph Presentation & Native UI
+        Sync --> Bridge["engine_cli.py (Ponte JSON UTF-8 via stdin/stdout)"]
+        Bridge --> UI["CartelaUI.exe (C# WPF Clean Light Mode)"]
+        UI --> Tab1["Gerador Inteligente + Volante 10x6"]
+        UI --> Tab2["Fechamentos C(v,k,t)"]
+        UI --> Tab3["Arbitragem E[X]"]
+        UI --> Tab4["Conferência 64-bit Bitmask"]
+        UI --> Tab5["Dados Oficiais Caixa"]
     end
 ```
 
@@ -97,20 +102,23 @@ $$E[X] = \left( P(\text{Sena}) \times \frac{\text{Prêmio}}{\mathbb{E}[\text{Gan
 
 Identifica a transição de valor esperado positivo ($E[X] > 0$) e calcula o ponto exato de equilíbrio (*Breakeven Jackpot*).
 
-### 4. Auditoria de Aleatoriedade NIST SP 800-22
+### 4. Auditoria de Aleatoriedade NIST SP 800-22 & Correção Hipergeométrica
 Auditoria de aderência à distribuição discreta uniforme via estatística Qui-Quadrado:
 
-$$\chi^2 = \sum_{i=1}^{60} \frac{(O_i - E_i)^2}{E_i} \quad \text{onde } E_i = \frac{N \times 6}{60}$$
+$$\chi^2 = \sum_{i=1}^{60} \frac{(O_i - E_i)^2}{E_i}, \quad E_i = \frac{N \times 6}{60}, \quad \chi^2_{\text{corr}} = \chi^2 \cdot \frac{59}{54}$$
 
-Com $N = 3.063$ concursos reais (18.378 bolas) e $gl = 59$, a estatística $\chi^2 = 82.42$ ($p = 0.0237$) **não rejeita a hipótese nula de aleatoriedade no limiar rigoroso de 99% de confiança ($\alpha = 0.01$)** estabelecido para geradores mecânicos pelo NIST.
+O fator $\frac{59}{54}$ corrige exatamente a covariância negativa da amostragem **sem reposição** (6 bolas dentre 60). Na base auditada ($N = 3.063$, $gl = 59$), obteve-se $\chi^2 = 82.42$ ($p = 0.0237$) e $\chi^2_{\text{corr}} = 90.05$, com média empírica das somas de `183.1727` contra `183.0000` teórico ($+0{,}09\%$).
 
-### 5. Baricentro Multivariado de Mahalanobis e Entropia
+### 5. Baricentro Multivariado 7D Full-Rank de Mahalanobis e Entropia
 Calcula a distância multivariada em relação ao baricentro histórico dos concursos reais:
 
 $$D_M(\vec{x}) = \sqrt{(\vec{x} - \vec{\mu})^T \Sigma^{-1} (\vec{x} - \vec{\mu})}$$
 
-Utiliza um vetor característico 8D:
-$$\vec{x} = [\text{Soma}, \text{Amplitude}, \text{Desvio Padrão}, \text{Pares}, Q_1, Q_2, Q_3, Q_4]$$
+Utiliza um vetor característico **7D linearmente independente** (removendo a 4ª componente redundante $q_4 = 6 - q_1 - q_2 - q_3$ para garantir posto completo de $\Sigma_{7\times 7}$ sem singularidade):
+$$\vec{x} = [\text{Soma}, \text{Amplitude}, \text{Desvio Padrão}, \text{Pares}, Q_1, Q_2, Q_3]$$
+
+### 6. Kernel Nativo C# `/unsafe` (`ulong*` + SWAR `PopCount64`)
+Para operações combinatórias intensivas ($C(v, 6, t)$ e *backtesting*), cada volante é compactado em um único inteiro de **64 bits (`ulong`)**. Em benchmark nativo via `csc.exe /unsafe /optimize+ /platform:x64`, o kernel varreu **1.000 backtests completos sobre 3.063 concursos em 14,532 ms** ($\approx 14{,}5\,\mu\text{s}$ por varredura).
 
 ---
 
@@ -125,16 +133,23 @@ Para aprofundamento técnico, consulte os documentos dedicados na pasta [`docs/`
 
 ---
 
-## 🎨 Interface Gráfica Minimalista
+## 🎨 Interface Gráfica Nativa (C# WPF Clean Light Mode)
 
-A interface foi projetada sob o conceito **Dark Slate Design System**, eliminando poluição visual, ruídos gráficos e sobrecarga de dados:
+<div align="center">
+  <img src="app_files/assets/cartela_ui_preview.png" alt="Cartela — Interface Nativa C# WPF Clean Light Mode" width="100%" />
+</div>
+
+A interface principal foi reescrita em **C# WPF nativo** ([`CartelaUI.cs`](app_files/src/ui_csharp/CartelaUI.cs) → `CartelaUI.exe`) com **tema claro minimalista** (`#F8FAFC` / `#FFFFFF`), ícones vetoriais e comunicação assíncrona UTF-8 com o motor:
 
 | Módulo | Finalidade |
 | :--- | :--- |
-| **⚡ Gerador Estratégico** | Configuração enxuta (Quantidade, Modelo Anti-Colisão, Filtro Gaussiano de Soma $[140, 225]$) e tabela limpa de visualização e cópia imediata. |
-| **📐 Fechamentos $C(v,k,t)$** | Entrada flexível de pools de dezenas e cálculo instantâneo da matriz ótima com indicador de economia percentual. |
-| **💎 Arbitragem $E[X]$** | 3 cartões limpos de métricas (KPIs): *Diretriz Estratégica*, *Valor Intrínseco por Bilhete* e *ROI Esperado*. |
-| **🔍 Conferência & Dados** | Conferência retrospectiva instantânea contra 3.063 concursos reais e sincronizador da API da Caixa com indicador discreto. |
+| **Gerador Inteligente** | Seletor de estratégia (`Anti-Colisão`, `Mahalanobis`, `Frequência`, `Aleatório`), filtro gaussiano, volante interativo `01–60`, 3 KPIs em tempo real e exportação `Copiar` / `CSV` / `PDF`. |
+| **Fechamentos $C(v,k,t)$** | Volante clicável (`6` a `16` dezenas), garantia `Quadra (t=4)` ou `Quina (t=5)`, execução via kernel nativo C# `/unsafe` e cálculo de custo oficial. |
+| **Arbitragem $E[X]$** | Análise Ginther-Mandel com botão **"Carregar Mega da Virada (Ao Vivo)"** conectado à API oficial `servicebus3`. |
+| **Conferência Histórica** | Backtest 64-bit bitmask contra toda a base histórica da Caixa. |
+| **Dados Oficiais Caixa** | Sincronização em massa `.xlsx` (`servicebus3`), concursos abertos ao vivo e log de telemetria. |
+
+> Para executar a interface legada em Tkinter, utilize `python run_app.py --tkinter`.
 
 ---
 
@@ -172,33 +187,36 @@ python examples/quickstart_analysis.py
 
 ---
 
-## 🧪 Suíte de Testes Automatizados
+## 🧪 Suíte de Testes Automatizados (18/18 Provas Reais)
 
-O projeto conta com **12 testes unitários formais**, verificando integridade de banco de dados, propriedades matemáticas, invariantes de teoria dos jogos, garantias combinatórias e concorrência thread-safe:
+O projeto conta com **18 testes unitários formais**, verificando integridade dos dados reais, invariantes matemáticos (posto completo 7D de Mahalanobis, correção hipergeométrica $\frac{59}{54}$), provas combinatórias por força bruta, kernel nativo C# `/unsafe`, parser `.xlsx` em stdlib e integração `servicebus3`:
 
 ```bash
-python -m unittest discover -v tests
+pytest -v
 ```
 
-### Saída Esperada:
+### Saída Real Verificada:
 ```text
-test_01_database_integrity ........................................ ok
-test_02_chi_square_uniformity_properties .......................... ok
-test_03_game_theory_anti_collision_scoring ........................ ok
-test_04_covering_design_mathematical_guarantee_quadra ............. ok
-test_05_covering_design_quina_guarantee ........................... ok
-test_06_covering_design_edge_cases ................................ ok
-test_07_arbitrage_ginther_mandel_calculations ..................... ok
-test_08_generator_modes_and_gaussian_filter ....................... ok
-test_09_mahalanobis_and_shannon_entropy ........................... ok
-test_10_backtest_accuracy ......................................... ok
-test_11_exports_csv_and_pdf ....................................... ok
-test_12_thread_safe_concurrency ................................... ok
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_01_database_integrity PASSED                              [  5%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_02_chi_square_uniformity_properties PASSED                [ 11%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_03_game_theory_anti_collision_scoring PASSED              [ 16%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_04_covering_design_mathematical_guarantee_quadra PASSED   [ 22%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_05_covering_design_quina_guarantee PASSED                 [ 27%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_06_covering_design_edge_cases PASSED                      [ 33%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_07_arbitrage_ginther_mandel_calculations PASSED           [ 38%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_08_generator_modes_and_gaussian_filter PASSED             [ 44%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_09_mahalanobis_and_shannon_entropy PASSED                 [ 50%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_10_backtest_accuracy PASSED                               [ 55%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_11_exports_csv_and_pdf PASSED                             [ 61%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_12_thread_safe_concurrency PASSED                         [ 66%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_13_caixa_servicebus3_and_fallback PASSED                  [ 72%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_14_mega_da_virada_ao_vivo_parser PASSED                   [ 77%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_15_xlsx_bulk_parser PASSED                                [ 83%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_16_native_csharp_kernel_covering_guarantee PASSED         [ 88%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_17_parametros_oficiais_e_custo_lote PASSED                [ 94%]
+tests/test_engine.py::TestMegaSenaEngineComprehensive::test_18_mahalanobis_full_rank_and_chi2_correction PASSED       [100%]
 
-----------------------------------------------------------------------
-Ran 12 tests in 0.966s
-
-OK
+============================= 18 passed in 1.15s ==============================
 ```
 
 ---
@@ -207,33 +225,43 @@ OK
 
 ```text
 Cartela/
-├── run_app.py                   # Ponto de entrada canônico da aplicação
-├── pyproject.toml               # Padrão moderno de empacotamento PEP 517/518/621
-├── requirements.txt             # Dependências essenciais (fpdf2, numpy)
-├── LICENSE                      # Licença MIT
-├── CITATION.cff                 # Arquivo de citação acadêmica padronizado
-├── README.md                    # Documentação técnica e científica completa
-├── docs/                        # Whitepapers e guias técnicos aprofundados
+├── CartelaUI.exe                  # Interface nativa C# WPF (Tema Claro Minimalista)
+├── run_app.py                     # Launcher principal (CartelaUI.exe ou --tkinter)
+├── pyproject.toml                 # Padrão moderno de empacotamento PEP 517/518/621
+├── requirements.txt               # Dependências essenciais (fpdf2, numpy)
+├── LICENSE                        # Licença MIT
+├── CITATION.cff                   # Arquivo de citação acadêmica padronizado
+├── README.md                      # Documentação técnica e científica completa
+├── docs/                          # Whitepapers e guias técnicos aprofundados
 │   ├── MATHEMATICAL_SPECIFICATION.md
 │   ├── ARCHITECTURE.md
 │   ├── CONTRIBUTING.md
 │   └── SECURITY.md
 ├── .github/
 │   └── workflows/
-│       └── ci.yml               # Pipeline de Integração Contínua (Ubuntu & Windows)
+│       └── ci.yml                 # Pipeline de Integração Contínua (Ubuntu & Windows)
 ├── tests/
-│   └── test_engine.py           # 12 testes unitários formais e provas combinatórias
+│   └── test_engine.py             # 18 testes unitários formais e provas combinatórias
 ├── examples/
-│   └── quickstart_analysis.py   # Demonstração rápida de uso da API
+│   └── quickstart_analysis.py     # Demonstração rápida de uso da API
 └── app_files/
+    ├── assets/
+    │   ├── cartela_logo.svg       # Logo vetorial minimalista
+    │   ├── cartela_logo.png       # Ícone 512x512
+    │   └── cartela_logo.ico       # Ícone Win32 embutido no CartelaUI.exe
     ├── data/
-    │   ├── mega_cache.json      # Cache local íntegro de 3.063 concursos oficiais Caixa
-    │   └── mega_history.csv     # Histórico tabular completo para análise externa
+    │   ├── mega_cache.json        # Cache local sincronizado (3.086+ concursos Caixa)
+    │   └── mega_history.csv       # Histórico tabular completo para análise externa
     └── src/
         ├── app/
-        │   └── gui.py           # Interface Gráfica Tkinter (Design System Minimalista)
+        │   └── gui.py             # Interface fallback Tkinter
+        ├── ui_csharp/
+        │   └── CartelaUI.cs       # Código-fonte da interface C# WPF
         └── core/
-            └── engine.py        # Motor Matemático, Teoria dos Jogos & Covering Designs
+            ├── engine.py          # Motor Matemático, servicebus3 & Covering Designs
+            ├── engine_cli.py      # Ponte JSON UTF-8 para a interface C#
+            ├── native_kernel.cs   # Kernel de baixo nível C# /unsafe (ulong* + PopCount64)
+            └── cartela_kernel.exe # Binário nativo x64 compilado
 ```
 
 ---

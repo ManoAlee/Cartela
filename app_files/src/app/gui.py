@@ -381,9 +381,13 @@ class CartelaApp(tk.Tk):
         jogos = self.engine.gerar_fechamento_combinatorio(dezenas, garantia=garantia)
         brutas = math.comb(len(dezenas), 6)
         economia = (1.0 - (len(jogos) / brutas)) * 100
+        lote = self.engine.calcular_custo_lote(jogos)
 
         self.lbl_fech_resumo.config(
-            text=f"Pool de {len(dezenas)} dezenas: {brutas} combinações brutas reduzidas para apenas {len(jogos)} volantes ({economia:.1f}% de economia de custo)"
+            text=(
+                f"Pool de {len(dezenas)} dezenas: {brutas} combinações brutas -> {len(jogos)} volantes "
+                f"({economia:.1f}% de economia) | Custo Oficial: R$ {lote['custo_total']:,.2f}"
+            )
         )
 
         for item in self.tree_fech.get_children():
@@ -420,6 +424,14 @@ class CartelaApp(tk.Tk):
         self.ent_premio_arb = tk.Entry(row_in, font=("Segoe UI", 10, "bold"), bg=self.c_input, fg=self.c_amber, width=18, bd=0, insertbackground="white")
         self.ent_premio_arb.insert(0, "1090000000")
         self.ent_premio_arb.pack(side="left", padx=10)
+
+        self.btn_sync_virada = ttk.Button(
+            row_in,
+            text="Mega da Virada (Ao Vivo)",
+            style="Secondary.TButton",
+            command=self._acao_carregar_virada,
+        )
+        self.btn_sync_virada.pack(side="right", padx=(8, 0))
 
         btn_calc = ttk.Button(row_in, text="Calcular Valor Esperado", style="Primary.TButton", command=self._acao_arbitragem)
         btn_calc.pack(side="right")
@@ -472,6 +484,38 @@ class CartelaApp(tk.Tk):
         )
         self.txt_arb_resumo.insert("end", msg)
 
+    def _acao_carregar_virada(self):
+        self.btn_sync_virada.config(state="disabled")
+
+        def task():
+            estimativa = None
+            info_txt = ""
+            try:
+                virada = self.engine.obter_mega_da_virada_ao_vivo()
+                if virada and virada.get("estimativa", 0) > 0:
+                    estimativa = virada["estimativa"]
+                    info_txt = f"Concurso #{virada['concurso']} (Sorteio: {virada.get('data_hora_sorteio', '')})"
+                else:
+                    ultimo = self.engine.obter_ultimo_resultado_online()
+                    if ultimo and ultimo.get("valor_acumulado_especial", 0) > 0:
+                        estimativa = ultimo["valor_acumulado_especial"]
+                        info_txt = f"Acumulado Especial até #{ultimo['numero']}"
+            except Exception:
+                pass
+
+            def aplicar():
+                self.btn_sync_virada.config(state="normal")
+                if estimativa:
+                    self.ent_premio_arb.delete(0, "end")
+                    self.ent_premio_arb.insert(0, f"{estimativa:.0f}")
+                    self._acao_arbitragem()
+                    if info_txt:
+                        self.txt_arb_resumo.insert("end", f"\n\nFonte Oficial Ao Vivo: {info_txt}")
+
+            self.after(0, aplicar)
+
+        threading.Thread(target=task, daemon=True).start()
+
     # -------------------------------------------------------------
     # ABA 4: CONFERÊNCIA HISTÓRICA & DADOS CAIXA
     # -------------------------------------------------------------
@@ -483,7 +527,7 @@ class CartelaApp(tk.Tk):
         top = tk.Frame(container, bg=self.c_card, padx=20, pady=18)
         top.pack(fill="x", pady=(0, 14))
 
-        tk.Label(top, text="Conferência contra 3.063 Concursos Históricos", bg=self.c_card, fg=self.c_text, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        tk.Label(top, text=f"Conferência contra {len(self.engine.concursos)} Concursos Históricos", bg=self.c_card, fg=self.c_text, font=("Segoe UI", 12, "bold")).pack(anchor="w")
         tk.Label(top, text="Verifique o desempenho histórico de qualquer jogo na base oficial da Caixa Econômica Federal.",
                  bg=self.c_card, fg=self.c_muted, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 10))
 
@@ -541,28 +585,47 @@ class CartelaApp(tk.Tk):
 
     def _acao_sync(self):
         self.btn_sync.config(state="disabled")
-        self.txt_log_sync.insert("end", f"[{time.strftime('%H:%M:%S')}] Conectando à API da Caixa...\n")
+        self.txt_log_sync.insert("end", f"[{time.strftime('%H:%M:%S')}] Conectando à API da Caixa (servicebus3)...\n")
 
         def task():
             try:
                 concursos = self.engine.sincronizar_dados_oficiais()
-                self.txt_log_sync.insert("end", f"[{time.strftime('%H:%M:%S')}] Concluído com sucesso! Total: {len(concursos)} concursos.\n")
-                self.badge_caixa.config(text=f"● {len(concursos)} Concursos Oficiais")
+                def on_ok():
+                    self.txt_log_sync.insert("end", f"[{time.strftime('%H:%M:%S')}] Concluído com sucesso! Total: {len(concursos)} concursos.\n")
+                    self.badge_caixa.config(text=f"● {len(concursos)} Concursos Oficiais")
+                    self.btn_sync.config(state="normal")
+                self.after(0, on_ok)
             except Exception as e:
-                self.txt_log_sync.insert("end", f"[{time.strftime('%H:%M:%S')}] Falha na sincronização: {e}\n")
-            finally:
-                self.btn_sync.config(state="normal")
+                err_msg = str(e)
+                def on_err():
+                    self.txt_log_sync.insert("end", f"[{time.strftime('%H:%M:%S')}] Falha na sincronização: {err_msg}\n")
+                    self.btn_sync.config(state="normal")
+                self.after(0, on_err)
+
         threading.Thread(target=task, daemon=True).start()
 
     def _carregar_resumo_caixa(self):
         def task():
             try:
                 info = self.engine.obter_ultimo_resultado_online()
+                params = self.engine.obter_parametros_oficiais_ao_vivo()
                 if info and hasattr(self, "badge_caixa"):
                     dezenas_fmt = " ".join(f"{d:02d}" for d in info['dezenas'])
-                    self.badge_caixa.config(
-                        text=f"● #{info['numero']}: {dezenas_fmt}"
+                    esp = info.get("valor_acumulado_especial", 0.0)
+                    texto = f"● #{info['numero']}: {dezenas_fmt}"
+                    if esp > 0:
+                        texto += f" | Virada: R$ {esp/1e6:.1f}M"
+                    self.after(0, lambda t=texto: self.badge_caixa.config(text=t))
+                if params and hasattr(self, "txt_log_sync"):
+                    abertos = ", ".join(
+                        f"#{c['concurso']} ({c['tipo']})" for c in params.get("concursos_abertos", [])
                     )
+                    v6 = params.get("tabela_precos", {}).get(6, 6.0)
+                    msg = (
+                        f"[{time.strftime('%H:%M:%S')}] Regras Oficiais Ao Vivo: "
+                        f"{abertos} | 6 dez: R$ {v6:.2f} | Mín. Carrinho: R$ {params['valor_minimo_carrinho']:.2f}\n"
+                    )
+                    self.after(0, lambda m=msg: self.txt_log_sync.insert("end", m))
             except Exception:
                 pass
         threading.Thread(target=task, daemon=True).start()

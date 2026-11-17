@@ -192,6 +192,181 @@ class TestMegaSenaEngineComprehensive(unittest.TestCase):
 
         self.assertEqual(len(errors), 0, f"Erros durante execução concorrente: {errors}")
 
+    def test_13_caixa_servicebus3_and_fallback(self):
+        """Valida parsing do payload servicebus3 (incluindo Mega da Virada) e fallback para servicebus2."""
+        from unittest.mock import patch
+
+        sample_payload = {
+            "numero": 3086,
+            "dataApuracao": "15/11/2026",
+            "listaDezenas": ["43", "03", "20", "35", "46", "38"],
+            "acumulado": True,
+            "valorEstimadoProximoConcurso": 34000000.0,
+            "dataProximoConcurso": "17/11/2026",
+            "indicadorConcursoEspecial": 1,
+            "tituloConcursoEspecial": None,
+            "valorAcumuladoConcursoEspecial": 153647230.91,
+        }
+
+        calls = []
+
+        def fake_get_json(url, timeout=8):
+            calls.append(url)
+            if "params.txt" in url:
+                return {"urlapiloterias": "https://servicebus3.caixa.gov.br/portaldeloterias"}
+            if "servicebus3" in url:
+                raise ConnectionError("servicebus3 indisponível no teste")
+            return sample_payload
+
+        self.engine._api_base = None
+        with patch.object(self.engine, "_http_get_json", side_effect=fake_get_json):
+            res = self.engine.obter_ultimo_resultado_online()
+
+        self.assertIsNotNone(res)
+        self.assertEqual(res["numero"], 3086)
+        self.assertEqual(res["dezenas"], [3, 20, 35, 38, 43, 46])
+        self.assertAlmostEqual(res["valor_acumulado_especial"], 153647230.91)
+        self.assertTrue(any("servicebus3" in u for u in calls))
+        self.assertTrue(any("servicebus2" in u for u in calls))
+
+    def test_14_mega_da_virada_ao_vivo_parser(self):
+        """Valida extração do concurso especial Mega da Virada do payload parametros-simulacao."""
+        from unittest.mock import patch
+
+        sim_payload = {
+            "versao": "2.99.10.41",
+            "payload": {
+                "parametros": [
+                    {
+                        "parametroJogo": {
+                            "concurso": {
+                                "modalidade": "MEGA_SENA",
+                                "modalidadeDetalhada": {"descricao": "Mega-Sena", "descricaoEspecial": "Mega da Virada"},
+                                "tipoConcurso": "ESPECIAL",
+                                "numero": 3100,
+                                "dataAbertura": "03/11/2026 07:00:00",
+                                "dataFechamento": "31/12/2026 22:00:00",
+                                "dataHoraSorteio": "01/01/2027 11:00:00",
+                                "valorApostaMinima": 6.0,
+                                "situacao": "ABERTO",
+                                "estimativa": 1000000000.0,
+                            }
+                        }
+                    }
+                ]
+            },
+        }
+        with patch.object(self.engine, "_http_get_json", return_value=sim_payload):
+            virada = self.engine.obter_mega_da_virada_ao_vivo()
+
+        self.assertIsNotNone(virada)
+        self.assertEqual(virada["concurso"], 3100)
+        self.assertEqual(virada["estimativa"], 1000000000.0)
+        self.assertEqual(virada["situacao"], "ABERTO")
+
+    def test_15_xlsx_bulk_parser(self):
+        """Valida o parser nativo stdlib de arquivos .xlsx oficiais da Caixa."""
+        import io
+        import zipfile
+
+        sheet_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            "<sheetData>"
+            '<row r="1"><c t="s"><v>0</v></c></row>'
+            '<row r="2">'
+            "<c><v>3086</v></c>"
+            '<c t="s"><v>1</v></c>'
+            "<c><v>43</v></c><c><v>3</v></c><c><v>20</v></c>"
+            "<c><v>35</v></c><c><v>46</v></c><c><v>38</v></c>"
+            "</row>"
+            "</sheetData>"
+            "</worksheet>"
+        )
+        shared_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            "<si><t>Concurso</t></si>"
+            "<si><t>15/11/2026</t></si>"
+            "</sst>"
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("xl/sharedStrings.xml", shared_xml)
+            zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+        parsed = MegaSenaEngine._parse_xlsx_concursos(buf.getvalue())
+        self.assertEqual(parsed, {3086: [3, 20, 35, 38, 43, 46]})
+
+    def test_16_native_csharp_kernel_covering_guarantee(self):
+        """Valida o kernel nativo C# (/unsafe ulong*) para pool de 10 dezenas (C(10,6,4))."""
+        pool = [4, 10, 15, 22, 29, 34, 41, 48, 53, 59]
+        fechamento = self.engine.gerar_fechamento_combinatorio(pool, garantia="quadra")
+        self.assertGreater(len(fechamento), 0)
+        self.assertLessEqual(len(fechamento), 25)
+
+        for sorteio in itertools.combinations(pool, 6):
+            s_set = set(sorteio)
+            max_acertos = max(len(s_set.intersection(v)) for v in fechamento)
+            self.assertGreaterEqual(max_acertos, 4, f"Falha no kernel nativo para sorteio {sorteio}")
+
+    def test_17_parametros_oficiais_e_custo_lote(self):
+        """Valida sincronização de regras/preços ao vivo e cálculo de custo oficial de lote."""
+        from unittest.mock import patch
+
+        sim_payload = {
+            "versao": "2.99.10.41",
+            "dataHoraServidor": "2026-11-17T13:10:05.268",
+            "payload": {
+                "valorMinimoCarrinho": 2.50,
+                "quantidadeMaximaApostasCarrinho": 999,
+                "parametros": [
+                    {
+                        "parametroJogo": {
+                            "concurso": {
+                                "modalidade": "MEGA_SENA",
+                                "modalidadeDetalhada": {"descricao": "Mega-Sena", "descricaoEspecial": "Mega da Virada"},
+                                "tipoConcurso": "ESPECIAL",
+                                "numero": 3100,
+                                "estimativa": 1000000000.0,
+                                "valorApostaMinima": 6.0,
+                                "situacao": "ABERTO",
+                            },
+                            "valoresAposta": [
+                                {"numeroPrognosticos": 6, "valor": 6.0},
+                                {"numeroPrognosticos": 7, "valor": 42.0},
+                            ],
+                        }
+                    }
+                ],
+            },
+        }
+        with patch.object(self.engine, "_http_get_json", return_value=sim_payload):
+            params = self.engine.obter_parametros_oficiais_ao_vivo()
+
+        self.assertIsNotNone(params)
+        self.assertEqual(params["tabela_precos"][7], 42.0)
+        lote = self.engine.calcular_custo_lote([[1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6, 7]])
+        self.assertEqual(lote["quantidade_volantes"], 2)
+        self.assertEqual(lote["custo_total"], 48.0)
+        self.assertTrue(lote["atende_minimo_carrinho"])
+        self.assertTrue(lote["dentro_limite_carrinho"])
+
+    def test_18_mahalanobis_full_rank_and_chi2_correction(self):
+        """Prova matemática: vetor 7D sem colinearidade (posto completo) e correção hipergeométrica 59/54."""
+        vec = self.engine._extrair_vetor_caracteristicas([5, 18, 27, 36, 45, 54])
+        self.assertEqual(len(vec), 7, "Vetor característico deve ter 7 dimensões linearmente independentes.")
+        self.assertEqual(len(self.engine.cov_inv), 7)
+
+        chi = self.engine.teste_qui_quadrado()
+        self.assertIn("estatistica_qui_quadrado_corrigida", chi)
+        self.assertIn("p_valor_corrigido", chi)
+        self.assertAlmostEqual(
+            chi["estatistica_qui_quadrado_corrigida"],
+            round(chi["estatistica_qui_quadrado"] * (59.0 / 54.0), 2),
+            delta=0.05,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ Baseado na Literatura Científica de Matemática Aplicada e Arbitragem Estatíst
 """
 
 import os
+import io
 import json
 import csv
 import ssl
@@ -20,9 +21,13 @@ import time
 import math
 import random
 import logging
+import zipfile
 import itertools
 import threading
+import subprocess
 import urllib.request
+import urllib.error
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any, Set
 
@@ -31,12 +36,24 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = DATA_DIR / "mega_cache.json"
 HISTORY_CSV = DATA_DIR / "mega_history.csv"
+NATIVE_KERNEL_CS = Path(__file__).resolve().parent / "native_kernel.cs"
+NATIVE_KERNEL_EXE = Path(__file__).resolve().parent / "cartela_kernel.exe"
+CSC_PATH = Path(r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe")
 
-SSL_CTX = ssl.create_default_context()
-SSL_CTX.check_hostname = False
-SSL_CTX.verify_mode = ssl.CERT_NONE
+SSL_CTX_VERIFIED = ssl.create_default_context()
+SSL_CTX_UNVERIFIED = ssl.create_default_context()
+SSL_CTX_UNVERIFIED.check_hostname = False
+SSL_CTX_UNVERIFIED.verify_mode = ssl.CERT_NONE
 
-CAIXA_API_URL = "https://servicebus2.caixa.gov.br/portaldeloterias/api/megasena"
+CAIXA_PARAMS_URL = "https://loterias.caixa.gov.br/Style%20Library/json/params.txt"
+CAIXA_API_BASE = "https://servicebus3.caixa.gov.br/portaldeloterias"
+CAIXA_API_URL = f"{CAIXA_API_BASE}/api/megasena"
+CAIXA_API_FALLBACK_URL = "https://servicebus2.caixa.gov.br/portaldeloterias/api/megasena"
+CAIXA_SIMULACAO_URL = (
+    "https://www.loteriasonline.caixa.gov.br/silce-servico-rest/rest/v1/"
+    "cGFyYW1ldHJvcy1zaW11bGFjYW8v"
+)
+DEFAULT_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 # Mapeamento de quadrantes clássicos do volante 10x6
 QUADRANTE_MAP: Dict[int, int] = {}
@@ -78,21 +95,239 @@ class MegaSenaEngine:
                     logging.error(f"Erro ao ler cache: {e}")
             return self.sincronizar_dados_oficiais()
 
-    def obter_ultimo_resultado_online(self) -> Optional[Dict[str, Any]]:
+    def _http_get_bytes(self, url: str, timeout: int = 8, headers: Optional[Dict[str, str]] = None) -> bytes:
+        req = urllib.request.Request(url, headers=headers or DEFAULT_HEADERS)
         try:
-            req = urllib.request.Request(CAIXA_API_URL, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, context=SSL_CTX, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, context=SSL_CTX_VERIFIED, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                logging.warning(f"Falha na verificação TLS para {url}; usando fallback sem verificação.")
+                with urllib.request.urlopen(req, context=SSL_CTX_UNVERIFIED, timeout=timeout) as resp:
+                    return resp.read()
+            raise
+
+    def _http_get_json(self, url: str, timeout: int = 8) -> Any:
+        raw = self._http_get_bytes(url, timeout=timeout)
+        return json.loads(raw.decode("utf-8"))
+
+    def _resolver_api_base(self) -> str:
+        cached = getattr(self, "_api_base", None)
+        if cached:
+            return cached
+        try:
+            params = self._http_get_json(CAIXA_PARAMS_URL, timeout=5)
+            if isinstance(params, dict) and params.get("urlapiloterias"):
+                self._api_base = str(params["urlapiloterias"]).rstrip("/")
+                return self._api_base
+        except Exception:
+            pass
+        self._api_base = CAIXA_API_BASE
+        return self._api_base
+
+    def _candidatos_megasena_url(self) -> List[str]:
+        base = self._resolver_api_base()
+        primary = f"{base}/api/megasena"
+        urls = [primary]
+        if CAIXA_API_URL not in urls:
+            urls.append(CAIXA_API_URL)
+        if CAIXA_API_FALLBACK_URL not in urls:
+            urls.append(CAIXA_API_FALLBACK_URL)
+        return urls
+
+    def obter_ultimo_resultado_online(self) -> Optional[Dict[str, Any]]:
+        for base_url in self._candidatos_megasena_url():
+            try:
+                data = self._http_get_json(base_url, timeout=8)
                 return {
                     "numero": int(data.get("numero", 0)),
                     "data": data.get("dataApuracao", ""),
                     "dezenas": sorted([int(x) for x in data.get("listaDezenas", [])]),
                     "acumulado": bool(data.get("acumulado", False)),
                     "premio_estimado": float(data.get("valorEstimadoProximoConcurso", 0.0)),
-                    "proximo_concurso_data": data.get("dataProximoConcurso", "")
+                    "proximo_concurso_data": data.get("dataProximoConcurso", ""),
+                    "indicador_concurso_especial": int(data.get("indicadorConcursoEspecial", 0) or 0),
+                    "titulo_especial": data.get("tituloConcursoEspecial") or "",
+                    "valor_acumulado_especial": float(data.get("valorAcumuladoConcursoEspecial", 0.0) or 0.0),
                 }
-        except Exception:
+            except Exception:
+                continue
+        return None
+
+    def obter_parametros_oficiais_ao_vivo(self) -> Optional[Dict[str, Any]]:
+        """Sincroniza regras, preços (6 a 20 dezenas) e concursos abertos de Mega-Sena/Virada ao vivo."""
+        try:
+            data = self._http_get_json(CAIXA_SIMULACAO_URL, timeout=8)
+            payload = data.get("payload", {}) if isinstance(data, dict) else {}
+            if not payload:
+                return None
+
+            concursos_abertos: List[Dict[str, Any]] = []
+            tabela_precos: Dict[int, float] = {}
+
+            for item in payload.get("parametros", []):
+                pj = item.get("parametroJogo", {})
+                concurso = pj.get("concurso", {})
+                if concurso.get("modalidade") != "MEGA_SENA":
+                    continue
+
+                precos_item = {
+                    int(p["numeroPrognosticos"]): float(p["valor"])
+                    for p in pj.get("valoresAposta", [])
+                    if "numeroPrognosticos" in p and "valor" in p
+                }
+                if precos_item and not tabela_precos:
+                    tabela_precos = precos_item
+
+                detalhada = concurso.get("modalidadeDetalhada", {})
+                tipo = concurso.get("tipoConcurso", "NORMAL")
+                concursos_abertos.append({
+                    "concurso": int(concurso.get("numero", 0)),
+                    "tipo": tipo,
+                    "descricao": detalhada.get("descricaoEspecial") if tipo == "ESPECIAL" else detalhada.get("descricao", "Mega-Sena"),
+                    "estimativa": float(concurso.get("estimativa", 0.0)),
+                    "data_abertura": concurso.get("dataAbertura", ""),
+                    "data_fechamento": concurso.get("dataFechamento", ""),
+                    "data_hora_sorteio": concurso.get("dataHoraSorteio", ""),
+                    "valor_aposta_minima": float(concurso.get("valorApostaMinima", 6.0)),
+                    "situacao": concurso.get("situacao", ""),
+                    "tabela_precos": precos_item,
+                })
+
+            resumo = {
+                "versao_api": data.get("versao", ""),
+                "data_hora_servidor": data.get("dataHoraServidor", ""),
+                "valor_minimo_carrinho": float(payload.get("valorMinimoCarrinho", 2.50)),
+                "max_apostas_carrinho": int(payload.get("quantidadeMaximaApostasCarrinho", 999)),
+                "tabela_precos": tabela_precos,
+                "concursos_abertos": concursos_abertos,
+            }
+            self._parametros_ao_vivo = resumo
+            return resumo
+        except Exception as e:
+            logging.debug(f"Portal Loterias Online indisponível ({e}); usando fallback servicebus3.")
+            ultimo = self.obter_ultimo_resultado_online()
+            if not ultimo:
+                return None
+            tabela_padrao = {
+                k: round(math.comb(k, 6) * 6.0, 2) for k in range(6, 21)
+            }
+            abertos = [
+                {
+                    "concurso": ultimo["numero"] + 1,
+                    "tipo": "NORMAL",
+                    "descricao": "Mega-Sena",
+                    "estimativa": ultimo.get("premio_estimado", 0.0),
+                    "data_abertura": "",
+                    "data_fechamento": ultimo.get("proximo_concurso_data", ""),
+                    "data_hora_sorteio": ultimo.get("proximo_concurso_data", ""),
+                    "valor_aposta_minima": 6.0,
+                    "situacao": "ABERTO",
+                    "tabela_precos": tabela_padrao,
+                }
+            ]
+            if ultimo.get("valor_acumulado_especial", 0.0) > 0:
+                abertos.append({
+                    "concurso": 3100,
+                    "tipo": "ESPECIAL",
+                    "descricao": "Mega da Virada (Acumulado)",
+                    "estimativa": ultimo["valor_acumulado_especial"],
+                    "data_abertura": "",
+                    "data_fechamento": "31/12/2026",
+                    "data_hora_sorteio": "01/01/2027",
+                    "valor_aposta_minima": 6.0,
+                    "situacao": "ABERTO",
+                    "tabela_precos": tabela_padrao,
+                })
+            resumo = {
+                "versao_api": "servicebus3-fallback",
+                "data_hora_servidor": ultimo.get("data", ""),
+                "valor_minimo_carrinho": 2.50,
+                "max_apostas_carrinho": 999,
+                "tabela_precos": tabela_padrao,
+                "concursos_abertos": abertos,
+            }
+            self._parametros_ao_vivo = resumo
+            return resumo
+
+    def obter_mega_da_virada_ao_vivo(self) -> Optional[Dict[str, Any]]:
+        """Consulta os parâmetros ao vivo do concurso especial Mega da Virada no portal Loterias Online."""
+        params = self.obter_parametros_oficiais_ao_vivo()
+        if not params:
             return None
+        for conc in params.get("concursos_abertos", []):
+            if conc.get("tipo") == "ESPECIAL" or conc.get("descricao") == "Mega da Virada":
+                return conc
+        return None
+
+    def calcular_custo_lote(self, jogos: List[List[int]], tabela_precos: Optional[Dict[int, float]] = None) -> Dict[str, Any]:
+        """Calcula o custo oficial de um lote de volantes usando a tabela ao vivo da Caixa."""
+        live = getattr(self, "_parametros_ao_vivo", None) or {}
+        precos = tabela_precos or live.get("tabela_precos") or {}
+        valor_base = float(precos.get(6, 6.0))
+        min_carrinho = float(live.get("valor_minimo_carrinho", 2.50))
+        max_apostas = int(live.get("max_apostas_carrinho", 999))
+
+        custo_total = 0.0
+        for j in jogos:
+            k = len(j)
+            if k in precos:
+                custo_total += float(precos[k])
+            elif k >= 6:
+                custo_total += math.comb(k, 6) * valor_base
+
+        qtd = len(jogos)
+        return {
+            "quantidade_volantes": qtd,
+            "custo_total": round(custo_total, 2),
+            "valor_unitario_6": valor_base,
+            "atende_minimo_carrinho": custo_total >= min_carrinho if qtd > 0 else False,
+            "dentro_limite_carrinho": qtd <= max_apostas,
+            "valor_minimo_carrinho": min_carrinho,
+            "max_apostas_carrinho": max_apostas,
+        }
+
+    @staticmethod
+    def _parse_xlsx_concursos(xlsx_bytes: bytes) -> Dict[int, List[int]]:
+        """Extrai {concurso: [d1..d6]} de um arquivo .xlsx oficial da Caixa usando apenas stdlib."""
+        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        concursos: Dict[int, List[int]] = {}
+        with zipfile.ZipFile(io.BytesIO(xlsx_bytes)) as zf:
+            shared_strings: List[str] = []
+            if "xl/sharedStrings.xml" in zf.namelist():
+                ss_root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+                for si in ss_root.findall("s:si", ns):
+                    shared_strings.append("".join(t.text or "" for t in si.findall(".//s:t", ns)))
+
+            sheet_name = next((n for n in zf.namelist() if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")), None)
+            if not sheet_name:
+                return concursos
+
+            sheet_root = ET.fromstring(zf.read(sheet_name))
+            for row in sheet_root.findall(".//s:row", ns):
+                vals: List[str] = []
+                for cell in row.findall("s:c", ns):
+                    ctype = cell.attrib.get("t", "")
+                    v_el = cell.find("s:v", ns)
+                    if v_el is None or v_el.text is None:
+                        continue
+                    raw_val = v_el.text.strip()
+                    if ctype == "s" and raw_val.isdigit():
+                        idx = int(raw_val)
+                        vals.append(shared_strings[idx] if idx < len(shared_strings) else raw_val)
+                    else:
+                        vals.append(raw_val)
+
+                if len(vals) < 7 or not vals[0].isdigit():
+                    continue
+                concurso_num = int(vals[0])
+                # Caixa XLSX: col 0 = Concurso, col 1 = Data, cols 2..7 = Bola1..Bola6
+                candidatos = [int(v) for v in vals[1:9] if v.isdigit() and 1 <= int(v) <= 60]
+                if len(candidatos) >= 6:
+                    dezenas = sorted(candidatos[:6])
+                    if len(set(dezenas)) == 6:
+                        concursos[concurso_num] = dezenas
+        return concursos
 
     def sincronizar_dados_oficiais(self, progress_callback=None) -> List[List[int]]:
         with self._lock:
@@ -105,20 +340,33 @@ class MegaSenaEngine:
             concursos_dict[num_ultimo] = ultimo_online["dezenas"]
 
             missing = [n for n in range(1, num_ultimo + 1) if n not in concursos_dict]
+            if len(missing) > 10:
+                try:
+                    xlsx_url = f"{self._resolver_api_base()}/api/resultados/download?modalidade=Mega-Sena"
+                    xlsx_bytes = self._http_get_bytes(xlsx_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+                    lote = self._parse_xlsx_concursos(xlsx_bytes)
+                    if lote:
+                        concursos_dict.update(lote)
+                        missing = [n for n in range(1, num_ultimo + 1) if n not in concursos_dict]
+                except Exception as e:
+                    logging.warning(f"Download em massa .xlsx indisponível ({e}); usando busca incremental.")
+
             total_missing = len(missing)
+            candidatos_url = self._candidatos_megasena_url()
 
             for idx, n in enumerate(missing, 1):
-                url = f"{CAIXA_API_URL}/{n}"
                 dezenas = None
-                for _ in range(3):
-                    try:
-                        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                        with urllib.request.urlopen(req, context=SSL_CTX, timeout=6) as r:
-                            d = json.loads(r.read().decode("utf-8"))
+                for base_url in candidatos_url:
+                    url = f"{base_url}/{n}"
+                    for _ in range(2):
+                        try:
+                            d = self._http_get_json(url, timeout=6)
                             dezenas = sorted([int(x) for x in d.get("listaDezenas", [])])
                             break
-                    except Exception:
-                        time.sleep(0.3)
+                        except Exception:
+                            time.sleep(0.2)
+                    if dezenas:
+                        break
 
                 if dezenas:
                     concursos_dict[n] = dezenas
@@ -279,12 +527,17 @@ class MegaSenaEngine:
 
             chi2_stat = sum(((freq[d] - esperado) ** 2) / esperado for d in range(1, 61))
             graus_liberdade = 59
+            # Correção exata para amostragem hipergeométrica sem reposição: fator (N_pop - 1) / (N_pop - k) = 59 / 54
+            chi2_corrigido = chi2_stat * (59.0 / 54.0)
 
-            if chi2_stat <= 0:
-                p_valor = 1.0
-            else:
-                z = ((chi2_stat / graus_liberdade) ** (1 / 3) - (1 - 2 / (9 * graus_liberdade))) / math.sqrt(2 / (9 * graus_liberdade))
-                p_valor = max(0.0, min(1.0, 0.5 * math.erfc(z / math.sqrt(2))))
+            def _chi2_pvalue(stat: float, df: int) -> float:
+                if stat <= 0:
+                    return 1.0
+                z = ((stat / df) ** (1 / 3) - (1 - 2 / (9 * df))) / math.sqrt(2 / (9 * df))
+                return max(0.0, min(1.0, 0.5 * math.erfc(z / math.sqrt(2))))
+
+            p_valor = _chi2_pvalue(chi2_stat, graus_liberdade)
+            p_valor_corrigido = _chi2_pvalue(chi2_corrigido, graus_liberdade)
 
             if p_valor >= 0.05:
                 conclusao = "ALEATORIEDADE PERFEITA (H0 Não Rejeitada a 95%)"
@@ -310,8 +563,10 @@ class MegaSenaEngine:
                 "total_bolas_sorteadas": total_bolas,
                 "frequencia_esperada_por_dezena": round(esperado, 2),
                 "estatistica_qui_quadrado": round(chi2_stat, 2),
+                "estatistica_qui_quadrado_corrigida": round(chi2_corrigido, 2),
                 "graus_liberdade": graus_liberdade,
                 "p_valor": round(p_valor, 4),
+                "p_valor_corrigido": round(p_valor_corrigido, 4),
                 "conclusao_cientifica": conclusao,
                 "explicacao": explicacao
             }
@@ -355,6 +610,36 @@ class MegaSenaEngine:
     # -------------------------------------------------------------
     # 6. COVERING DESIGNS C(v, k, t) OTIMIZADO
     # -------------------------------------------------------------
+    def _ensure_native_kernel(self) -> Optional[Path]:
+        """Garante o binário nativo C# (/unsafe ulong*) compilado em Windows x64."""
+        if os.name != "nt":
+            return None
+        if NATIVE_KERNEL_EXE.exists():
+            return NATIVE_KERNEL_EXE
+        if NATIVE_KERNEL_CS.exists() and CSC_PATH.exists():
+            try:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                subprocess.run(
+                    [
+                        str(CSC_PATH),
+                        "/nologo",
+                        "/unsafe",
+                        "/optimize+",
+                        "/platform:x64",
+                        f"/out:{NATIVE_KERNEL_EXE}",
+                        str(NATIVE_KERNEL_CS),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=20,
+                    creationflags=flags,
+                )
+                if NATIVE_KERNEL_EXE.exists():
+                    return NATIVE_KERNEL_EXE
+            except Exception as e:
+                logging.warning(f"Falha ao compilar kernel nativo C#: {e}")
+        return None
+
     def gerar_fechamento_combinatorio(self, dezenas_pool: List[int], garantia: str = "quadra") -> List[List[int]]:
         pool = sorted(list(set(dezenas_pool)))
         v = len(pool)
@@ -366,28 +651,57 @@ class MegaSenaEngine:
             return [pool]
 
         t_garantia = 4 if garantia == "quadra" else 5
-        todas_tuplas_alvo = set(frozenset(c) for c in itertools.combinations(pool, t_garantia))
-        todos_blocos_k6 = list(itertools.combinations(pool, 6))
 
-        bloco_cobertura = []
-        for bloco in todos_blocos_k6:
-            cobertos = set(frozenset(c) for c in itertools.combinations(bloco, t_garantia))
-            bloco_cobertura.append((bloco, cobertos))
+        if v >= 9:
+            kernel_exe = self._ensure_native_kernel()
+            if kernel_exe:
+                try:
+                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    pool_csv = ",".join(str(d) for d in pool)
+                    proc = subprocess.run(
+                        [str(kernel_exe), "cover", str(t_garantia), pool_csv],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        creationflags=flags,
+                    )
+                    jogos = [
+                        [int(x) for x in line.strip().split(",")]
+                        for line in proc.stdout.splitlines()
+                        if line.strip()
+                    ]
+                    if jogos:
+                        return jogos
+                except Exception as e:
+                    logging.warning(f"Fallback para bitmask Python no fechamento: {e}")
 
-        tuplas_restantes = set(todas_tuplas_alvo)
-        jogos_selecionados = []
+        # Fallback puro Python com bitmasks de 64 bits (sem alocação de frozenset)
+        todos_blocos = [
+            (sum(1 << (d - 1) for d in b), list(b))
+            for b in itertools.combinations(pool, 6)
+        ]
+        tuplas_restantes = [
+            sum(1 << (d - 1) for d in c)
+            for c in itertools.combinations(pool, t_garantia)
+        ]
+        jogos_selecionados: List[List[int]] = []
 
         while tuplas_restantes:
-            melhor_bloco, melhor_cobertos = max(
-                bloco_cobertura,
-                key=lambda item: len(item[1] & tuplas_restantes)
-            )
-            inter = melhor_cobertos & tuplas_restantes
-            if not inter:
+            melhor_idx = -1
+            melhor_hits = 0
+            for idx, (b_mask, _) in enumerate(todos_blocos):
+                hits = sum(1 for t_mask in tuplas_restantes if (b_mask & t_mask) == t_mask)
+                if hits > melhor_hits:
+                    melhor_hits = hits
+                    melhor_idx = idx
+                    if hits == len(tuplas_restantes):
+                        break
+            if melhor_idx < 0 or melhor_hits == 0:
                 break
-            jogos_selecionados.append(sorted(list(melhor_bloco)))
-            tuplas_restantes -= inter
-            bloco_cobertura = [item for item in bloco_cobertura if item[0] != melhor_bloco]
+            b_mask, b_list = todos_blocos.pop(melhor_idx)
+            jogos_selecionados.append(b_list)
+            tuplas_restantes = [t_mask for t_mask in tuplas_restantes if (b_mask & t_mask) != t_mask]
 
         return jogos_selecionados
 
@@ -404,8 +718,8 @@ class MegaSenaEngine:
         q1 = float(sum(1 for x in jogo if QUADRANTE_MAP.get(x, 1) == 1))
         q2 = float(sum(1 for x in jogo if QUADRANTE_MAP.get(x, 2) == 2))
         q3 = float(sum(1 for x in jogo if QUADRANTE_MAP.get(x, 3) == 3))
-        q4 = float(sum(1 for x in jogo if QUADRANTE_MAP.get(x, 4) == 4))
-        return [soma, amp, dp, pares, q1, q2, q3, q4]
+        # Vetor 7D linearmente independente (q4 = 6 - q1 - q2 - q3 evita singularidade de Σ)
+        return [soma, amp, dp, pares, q1, q2, q3]
 
     def _calibrar_matriz_mahalanobis(self):
         with self._lock:
@@ -592,11 +906,16 @@ class MegaSenaEngine:
     # -------------------------------------------------------------
     def backtest_jogo(self, jogo: List[int]) -> Dict[str, Any]:
         with self._lock:
-            jogo_set = set(jogo)
+            jogo_mask = 0
+            for d in jogo:
+                jogo_mask |= (1 << (d - 1))
             acertos_count = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
             premiados = []
             for idx, conc in enumerate(self.concursos, 1):
-                hits = len(jogo_set.intersection(conc))
+                c_mask = 0
+                for d in conc:
+                    c_mask |= (1 << (d - 1))
+                hits = (jogo_mask & c_mask).bit_count()
                 acertos_count[hits] += 1
                 if hits >= 4:
                     premiados.append({"concurso": idx, "acertos": hits, "sorteio": conc})
