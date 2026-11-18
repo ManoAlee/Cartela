@@ -1156,6 +1156,14 @@ class MegaSenaEngine:
         if quantidade <= 0:
             return []
 
+        if modo in ("balanceado", "portfolio_balanceado"):
+            res_bal = self.gerar_portfolio_balanceado(quantidade=quantidade, modalidade="MEGA_SENA")
+            return res_bal.get("jogos", [])
+
+        if modo in ("ancoras", "dezenas_ancoras"):
+            res_anc = self.gerar_jogos_com_ancoras(ancoras=[10, 23], quantidade=quantidade, modalidade="MEGA_SENA")
+            return res_anc.get("jogos", [])
+
         populacao = list(range(1, 61))
         pesos_anticolisao = [1.0 if d <= 31 else 1.95 for d in range(1, 61)]
         freq = self.calcular_frequencias()

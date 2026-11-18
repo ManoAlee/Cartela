@@ -693,9 +693,10 @@ namespace CartelaUI
                 Padding = new Thickness(4),
                 Margin = new Thickness(0, 0, 0, 14)
             };
-            var modeGrid = new UniformGrid { Columns = 4 };
+            var modeGrid = new UniformGrid { Columns = 5 };
             var modes = new[]
             {
+                new { Key = "balanceado", Label = "★ Balanceado V2" },
                 new { Key = "anti_colisao", Label = "Anti-Colisão" },
                 new { Key = "mahalanobis", Label = "Mahalanobis" },
                 new { Key = "frequencia", Label = "Frequência" },
