@@ -15,6 +15,7 @@ Thumbs.db
 .DS_Store
 Cartela_dist.zip
 app_files/data/mega_cache.json
+app_files/data/minhas_apostas.json
 
 # IDEs
 .vscode/

@@ -445,6 +445,34 @@ class TestMegaSenaEngineComprehensive(unittest.TestCase):
         self.assertEqual(len(ort["jogos"]), 5)
         self.assertGreaterEqual(ort["hamming_minimo"], 6)
 
+    def test_23_balanced_portfolio_and_anchors(self):
+        """Valida Cobertura Balanceada de Portfólio (Phi), Índice de Densidade e Dezenas Âncoras."""
+        # 1. Densidade combinatória
+        jogos_disjuntos = [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]
+        d_disj = self.engine.calcular_densidade_combinatoria_portfolio(jogos_disjuntos)
+        self.assertEqual(d_disj["phi"], 0.0)
+        self.assertIn("Dispersão Total", d_disj["diagnostico"])
+
+        jogos_balanceados = [[1, 2, 3, 4, 5, 6], [1, 2, 3, 7, 8, 9]]
+        d_bal = self.engine.calcular_densidade_combinatoria_portfolio(jogos_balanceados)
+        self.assertEqual(d_bal["phi"], 0.5)
+        self.assertIn("Zona Ótima", d_bal["diagnostico"])
+
+        # 2. Portfólio balanceado
+        res_bal = self.engine.gerar_portfolio_balanceado(pool=[3, 7, 12, 19, 23, 28, 35, 42, 48, 54], quantidade=3, modalidade="MEGA_SENA")
+        self.assertTrue(res_bal["ok"])
+        self.assertEqual(len(res_bal["jogos"]), 3)
+        self.assertGreater(res_bal["densidade"]["phi"], 0.0)
+
+        # 3. Jogos com âncoras (bases fixas)
+        res_anc = self.engine.gerar_jogos_com_ancoras(ancoras=[10, 25], satelites=[3, 14, 22, 33, 45, 51, 58], quantidade=3, modalidade="MEGA_SENA")
+        self.assertTrue(res_anc["ok"])
+        self.assertEqual(len(res_anc["jogos"]), 3)
+        for j in res_anc["jogos"]:
+            self.assertIn(10, j)
+            self.assertIn(25, j)
+            self.assertEqual(len(j), 6)
+
 
 if __name__ == "__main__":
     unittest.main()

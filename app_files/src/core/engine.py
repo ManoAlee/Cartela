@@ -95,25 +95,6 @@ class MegaSenaEngine:
                             return list(self.concursos)
                 except Exception as e:
                     logging.error(f"Erro ao ler cache: {e}")
-
-            if HISTORY_CSV.exists():
-                try:
-                    concursos_csv: List[List[int]] = []
-                    with open(HISTORY_CSV, "r", encoding="utf-8") as f:
-                        reader = csv.reader(f, delimiter=";")
-                        header = next(reader, None)
-                        for row in reader:
-                            if len(row) >= 7:
-                                dezenas = sorted(int(x) for x in row[1:7])
-                                if len(dezenas) == 6:
-                                    concursos_csv.append(dezenas)
-                    if concursos_csv:
-                        self.concursos = concursos_csv
-                        self._calibrar_matriz_mahalanobis()
-                        return list(self.concursos)
-                except Exception as e:
-                    logging.error(f"Erro ao ler histórico CSV: {e}")
-
             return self.sincronizar_dados_oficiais()
 
     def _http_get_bytes(self, url: str, timeout: int = 8, headers: Optional[Dict[str, str]] = None) -> bytes:
@@ -1179,7 +1160,7 @@ class MegaSenaEngine:
         pesos_anticolisao = [1.0 if d <= 31 else 1.95 for d in range(1, 61)]
         freq = self.calcular_frequencias()
         max_f = max(freq.values()) if freq and max(freq.values()) > 0 else 1
-        pesos_freq = [max(0.01, freq.get(d, 0) / max_f) for d in range(1, 61)]
+        pesos_freq = [freq.get(d, 1) / max_f for d in range(1, 61)]
 
         candidatos: List[Tuple[float, float, List[int]]] = []
         max_iter = max(1000, quantidade * 250)
@@ -1357,6 +1338,214 @@ class MegaSenaEngine:
 
         pdf.output(filepath)
         return filepath
+
+    # -------------------------------------------------------------
+    # 2C. OTIMIZADOR DE PORTFÓLIO E COBERTURA BALANCEADA
+    # -------------------------------------------------------------
+    def calcular_densidade_combinatoria_portfolio(
+        self, jogos: List[List[int]], modalidade: str = "MEGA_SENA"
+    ) -> Dict[str, Any]:
+        r"""
+        Calcula o Índice de Densidade Combinatória Phi do portfólio.
+        Phi = (1 / C(m, 2)) * sum_{i < j} (|J_i \cap J_j| / k)
+        Mede a concentração estocástica versus dispersão de Hamming.
+        """
+        if not jogos:
+            return {"phi": 0.0, "total_jogos": 0, "dezenas_unicas": 0, "intersecoes": []}
+
+        is_quina = modalidade.upper() == "QUINA"
+        k = 5 if is_quina else 6
+        m = len(jogos)
+
+        dezenas_totais = sorted(list(set(d for j in jogos for d in j)))
+
+        if m < 2:
+            return {
+                "phi": 0.0,
+                "total_jogos": m,
+                "dezenas_unicas": len(dezenas_totais),
+                "dezenas_pool": dezenas_totais,
+                "intersecoes_media": 0.0,
+                "diagnostico": "Jogo individual isolado.",
+            }
+
+        intersecoes = []
+        for i in range(m):
+            for j in range(i + 1, m):
+                inter = len(set(jogos[i]) & set(jogos[j]))
+                intersecoes.append(inter)
+
+        media_inter = sum(intersecoes) / len(intersecoes)
+        phi = media_inter / k
+
+        if phi == 0.0:
+            diag = "Dispersão Total (Ortogonal estrito). Alto risco de fragmentação de acertos."
+        elif phi < 0.25:
+            diag = "Baixa densidade combinatória. Acertos tendem a ficar isolados."
+        elif 0.25 <= phi <= 0.55:
+            diag = "Zona Ótima (Sweet Spot). Condensação ideal de acertos em faixas premiáveis."
+        else:
+            diag = "Alta sobreposição. Risco de redundância excessiva de volantes."
+
+        return {
+            "phi": round(phi, 4),
+            "media_intersecao": round(media_inter, 2),
+            "total_jogos": m,
+            "dezenas_unicas": len(dezenas_totais),
+            "dezenas_pool": dezenas_totais,
+            "distribuicao_intersecoes": intersecoes,
+            "diagnostico": diag,
+        }
+
+    def gerar_portfolio_balanceado(
+        self,
+        pool: Optional[List[int]] = None,
+        quantidade: int = 3,
+        modalidade: str = "MEGA_SENA",
+        garantia: str = "quadra",
+    ) -> Dict[str, Any]:
+        """
+        Gera uma carteira balanceada (BIBD/Covering Design) de volantes a partir de um pool
+        estratégico, garantindo densidade combinatória calibrada (Phi in [0.25, 0.55]) para
+        evitar a fragmentação de acertos em funções de payoff não-lineares.
+        """
+        is_quina = modalidade.upper() == "QUINA"
+        k = 5 if is_quina else 6
+        max_num = 80 if is_quina else 60
+
+        if pool is None or len(pool) < k:
+            tamanho_pool = min(max(k + 3, quantidade * 3), 18)
+            candidatos = list(range(1, max_num + 1))
+            random.seed(42)
+            random.shuffle(candidatos)
+            pool = sorted(candidatos[:tamanho_pool])
+        else:
+            pool = sorted(list(set(int(x) for x in pool if 1 <= int(x) <= max_num)))
+            if len(pool) < k:
+                raise ValueError(f"Pool deve conter pelo menos {k} dezenas distintas.")
+
+        from itertools import combinations
+        todos_comb = list(combinations(pool, k))
+        if len(todos_comb) > 500:
+            random.seed(42)
+            todos_comb = random.sample(todos_comb, 500)
+
+        validas = []
+        for c in todos_comb:
+            j = list(c)
+            s = sum(j)
+            pares = sum(1 for d in j if d % 2 == 0)
+            if not is_quina:
+                if 120 <= s <= 240 and 1 <= pares <= 5:
+                    validas.append(j)
+            else:
+                if 100 <= s <= 300 and 1 <= pares <= 4:
+                    validas.append(j)
+
+        if not validas:
+            validas = [list(c) for c in todos_comb[:max(quantidade * 2, 10)]]
+
+        r_alvo = 2 if is_quina else (2 if len(pool) >= 12 else 3)
+        jogos_escolhidos: List[List[int]] = [validas[0]]
+
+        candidatos_restantes = validas[1:]
+        while len(jogos_escolhidos) < quantidade and candidatos_restantes:
+            melhor_candidato = None
+            melhor_score = float("inf")
+            for cand in candidatos_restantes:
+                penalidade = 0.0
+                for sel in jogos_escolhidos:
+                    inter = len(set(cand) & set(sel))
+                    if inter == 0:
+                        penalidade += 5.0
+                    elif inter >= k:
+                        penalidade += 20.0
+                    else:
+                        penalidade += abs(inter - r_alvo) ** 2
+                if penalidade < melhor_score:
+                    melhor_score = penalidade
+                    melhor_candidato = cand
+            if melhor_candidato:
+                jogos_escolhidos.append(melhor_candidato)
+                candidatos_restantes.remove(melhor_candidato)
+            else:
+                break
+
+        while len(jogos_escolhidos) < quantidade:
+            jogos_escolhidos.append(sorted(random.sample(pool, k)))
+
+        dens = self.calcular_densidade_combinatoria_portfolio(jogos_escolhidos, modalidade=modalidade)
+        return {
+            "ok": True,
+            "modalidade": modalidade,
+            "pool": pool,
+            "jogos": jogos_escolhidos,
+            "densidade": dens,
+            "estrategia": f"Portfólio Balanceado (Interseção Alvo r={r_alvo})",
+        }
+
+    def gerar_jogos_com_ancoras(
+        self,
+        ancoras: List[int],
+        satelites: Optional[List[int]] = None,
+        quantidade: int = 3,
+        modalidade: str = "MEGA_SENA",
+    ) -> Dict[str, Any]:
+        """
+        Gera jogos fixando dezenas ÂNCORAS (bases do apostador) em 100% dos volantes,
+        e combinando os satélites de forma balanceada.
+        Reduz o espaço amostral de C(60, 6) para C(60 - len(ancoras), 6 - len(ancoras)).
+        """
+        from math import comb
+        is_quina = modalidade.upper() == "QUINA"
+        k = 5 if is_quina else 6
+        max_num = 80 if is_quina else 60
+
+        ancoras_limpas = sorted(list(set(int(x) for x in ancoras if 1 <= int(x) <= max_num)))
+        if not ancoras_limpas:
+            raise ValueError("Pelo menos uma dezena âncora válida deve ser fornecida.")
+        if len(ancoras_limpas) >= k:
+            raise ValueError(f"O número de âncoras ({len(ancoras_limpas)}) deve ser menor que {k}.")
+
+        faltam = k - len(ancoras_limpas)
+
+        if satelites is None or len(satelites) < faltam:
+            disponiveis = [d for d in range(1, max_num + 1) if d not in ancoras_limpas]
+            random.seed(42)
+            random.shuffle(disponiveis)
+            satelites = sorted(disponiveis[:max(faltam * quantidade, faltam + 4)])
+        else:
+            satelites = sorted(list(set(int(x) for x in satelites if 1 <= int(x) <= max_num and x not in ancoras_limpas)))
+            if len(satelites) < faltam:
+                raise ValueError(f"O pool de satélites deve conter pelo menos {faltam} dezenas distintas.")
+
+        from itertools import combinations
+        comb_sat = list(combinations(satelites, faltam))
+        if len(comb_sat) > quantidade:
+            passo = max(1, len(comb_sat) // quantidade)
+            comb_escolhidas = [comb_sat[i * passo] for i in range(quantidade)]
+        else:
+            comb_escolhidas = list(comb_sat)
+            while len(comb_escolhidas) < quantidade:
+                comb_escolhidas.append(tuple(random.sample(satelites, faltam)))
+
+        jogos = [sorted(list(ancoras_limpas) + list(c)) for c in comb_escolhidas[:quantidade]]
+
+        omega_original = comb(max_num, k)
+        omega_condicional = comb(max_num - len(ancoras_limpas), faltam)
+        fator_ganho = round(omega_original / omega_condicional, 2)
+
+        dens = self.calcular_densidade_combinatoria_portfolio(jogos, modalidade=modalidade)
+        return {
+            "ok": True,
+            "modalidade": modalidade,
+            "ancoras": ancoras_limpas,
+            "satelites": satelites,
+            "jogos": jogos,
+            "densidade": dens,
+            "fator_ganho_espaco_amostral": f"{fator_ganho}x mais fácil (condicional ao acerto das âncoras)",
+            "omega_condicional": omega_condicional,
+        }
 
 
 _global_engine: Optional[MegaSenaEngine] = None

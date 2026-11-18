@@ -154,6 +154,57 @@ def main() -> int:
             premio = float(payload.get("premio", 14500000.0))
             res = engine.calcular_arbitragem_quina(premio)
             out = {"ok": True, "resultado": res}
+        elif cmd == "portfolio_balanceado":
+            pool = payload.get("pool")
+            qtd = int(payload.get("quantidade", 3))
+            mod = str(payload.get("modalidade", "MEGA_SENA"))
+            out = engine.gerar_portfolio_balanceado(pool=pool, quantidade=qtd, modalidade=mod)
+        elif cmd == "jogos_ancoras":
+            ancoras = [int(x) for x in payload.get("ancoras", [])]
+            satelites = payload.get("satelites")
+            if satelites is not None:
+                satelites = [int(x) for x in satelites]
+            qtd = int(payload.get("quantidade", 3))
+            mod = str(payload.get("modalidade", "MEGA_SENA"))
+            out = engine.gerar_jogos_com_ancoras(ancoras=ancoras, satelites=satelites, quantidade=qtd, modalidade=mod)
+        elif cmd == "densidade":
+            jogos = payload.get("jogos", [])
+            mod = str(payload.get("modalidade", "MEGA_SENA"))
+            out = engine.calcular_densidade_combinatoria_portfolio(jogos=jogos, modalidade=mod)
+        elif cmd == "conferir_minhas_apostas":
+            apostas_path = SRC_DIR.parent / "data" / "minhas_apostas.json"
+            if not apostas_path.exists():
+                out = {"ok": False, "error": "Nenhuma aposta registrada em minhas_apostas.json"}
+            else:
+                reg = json.loads(apostas_path.read_text(encoding="utf-8"))
+                ultimos_por_mod = {
+                    "QUINA": engine.obter_ultimo_resultado_online("QUINA"),
+                    "MEGA_SENA": engine.obter_ultimo_resultado_online("MEGA_SENA"),
+                }
+                resultados = []
+                for compra in reg.get("compras", []):
+                    mod = str(compra.get("modalidade", "MEGA_SENA")).upper()
+                    ultimo_m = ultimos_por_mod.get(mod)
+                    conc_alvo = int(compra.get("concurso", 0))
+                    apurado = ultimo_m if (ultimo_m and ultimo_m.get("numero") == conc_alvo) else None
+                    dezenas_sorteadas = set(apurado["dezenas"]) if apurado else set()
+                    jogos_conf = []
+                    for j in compra.get("apostas", []):
+                        acertos = sorted(set(j) & dezenas_sorteadas) if apurado else []
+                        jogos_conf.append({
+                            "jogo": j,
+                            "acertos": acertos,
+                            "qtd_acertos": len(acertos),
+                        })
+                    resultados.append({
+                        "numero_compra": compra.get("numero_compra"),
+                        "modalidade": mod,
+                        "concurso": conc_alvo,
+                        "status_sorteio": "APURADO" if apurado else f"AGUARDANDO SORTEIO (Último apurado: #{ultimo_m['numero'] if ultimo_m else '?'})",
+                        "dezenas_sorteadas": sorted(dezenas_sorteadas),
+                        "jogos": jogos_conf,
+                    })
+                out = {"ok": True, "conferencia": resultados}
         else:
             out = {"ok": False, "error": f"Comando desconhecido: {cmd}"}
     except Exception as exc:
