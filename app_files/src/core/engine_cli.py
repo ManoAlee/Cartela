@@ -180,30 +180,40 @@ def main() -> int:
                 ultimos_por_mod = {
                     "QUINA": engine.obter_ultimo_resultado_online("QUINA"),
                     "MEGA_SENA": engine.obter_ultimo_resultado_online("MEGA_SENA"),
+                    "LOTOFACIL": engine.obter_ultimo_resultado_online("LOTOFACIL"),
                 }
                 resultados = []
                 for compra in reg.get("compras", []):
-                    mod = str(compra.get("modalidade", "MEGA_SENA")).upper()
-                    ultimo_m = ultimos_por_mod.get(mod)
-                    conc_alvo = int(compra.get("concurso", 0))
-                    apurado = ultimo_m if (ultimo_m and ultimo_m.get("numero") == conc_alvo) else None
-                    dezenas_sorteadas = set(apurado["dezenas"]) if apurado else set()
-                    jogos_conf = []
-                    for j in compra.get("apostas", []):
-                        acertos = sorted(set(j) & dezenas_sorteadas) if apurado else []
-                        jogos_conf.append({
-                            "jogo": j,
-                            "acertos": acertos,
-                            "qtd_acertos": len(acertos),
+                    num_compra = compra.get("numero_compra")
+                    itens = compra.get("itens")
+                    if not itens:
+                        itens = [{
+                            "modalidade": compra.get("modalidade", "MEGA_SENA"),
+                            "concurso": compra.get("concurso", 0),
+                            "apostas": compra.get("apostas", []),
+                        }]
+                    for item in itens:
+                        mod = str(item.get("modalidade", "MEGA_SENA")).upper()
+                        ultimo_m = ultimos_por_mod.get(mod)
+                        conc_alvo = int(item.get("concurso", 0))
+                        apurado = ultimo_m if (ultimo_m and ultimo_m.get("numero") == conc_alvo) else None
+                        dezenas_sorteadas = set(apurado["dezenas"]) if apurado else set()
+                        jogos_conf = []
+                        for j in item.get("apostas", []):
+                            acertos = sorted(set(j) & dezenas_sorteadas) if apurado else []
+                            jogos_conf.append({
+                                "jogo": j,
+                                "acertos": acertos,
+                                "qtd_acertos": len(acertos),
+                            })
+                        resultados.append({
+                            "numero_compra": num_compra,
+                            "modalidade": mod,
+                            "concurso": conc_alvo,
+                            "status_sorteio": "APURADO" if apurado else f"AGUARDANDO SORTEIO (Último apurado: #{ultimo_m['numero'] if ultimo_m else '?'})",
+                            "dezenas_sorteadas": sorted(dezenas_sorteadas),
+                            "jogos": jogos_conf,
                         })
-                    resultados.append({
-                        "numero_compra": compra.get("numero_compra"),
-                        "modalidade": mod,
-                        "concurso": conc_alvo,
-                        "status_sorteio": "APURADO" if apurado else f"AGUARDANDO SORTEIO (Último apurado: #{ultimo_m['numero'] if ultimo_m else '?'})",
-                        "dezenas_sorteadas": sorted(dezenas_sorteadas),
-                        "jogos": jogos_conf,
-                    })
                 out = {"ok": True, "conferencia": resultados}
         else:
             out = {"ok": False, "error": f"Comando desconhecido: {cmd}"}
