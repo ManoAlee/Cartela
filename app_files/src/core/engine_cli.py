@@ -171,6 +171,16 @@ def main() -> int:
             jogos = payload.get("jogos", [])
             mod = str(payload.get("modalidade", "MEGA_SENA"))
             out = engine.calcular_densidade_combinatoria_portfolio(jogos=jogos, modalidade=mod)
+        elif cmd == "lotofacil_markov":
+            qtd = int(payload.get("quantidade", 2))
+            base = payload.get("concurso_anterior")
+            if base is not None:
+                base = [int(x) for x in base]
+            out = engine.gerar_portfolio_lotofacil_markov(quantidade=qtd, concurso_anterior=base)
+        elif cmd == "quina_hedging":
+            jogo_base = [int(x) for x in payload.get("jogo_base", [12, 19, 27, 42, 53])]
+            qtd = int(payload.get("quantidade", 2))
+            out = engine.gerar_hedging_vizinhanca_quina(jogo_base=jogo_base, quantidade=qtd)
         elif cmd == "conferir_minhas_apostas":
             apostas_path = SRC_DIR.parent / "data" / "minhas_apostas.json"
             if not apostas_path.exists():

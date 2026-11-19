@@ -473,6 +473,26 @@ class TestMegaSenaEngineComprehensive(unittest.TestCase):
             self.assertIn(25, j)
             self.assertEqual(len(j), 6)
 
+    def test_24_lotofacil_markov_and_quina_hedging(self):
+        """Valida Lotofácil Markov Hipergeométrica (k in [8, 10]) e Quina Neighbor Hedging."""
+        base_3832 = [1, 3, 5, 7, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 23]
+        res_loto = self.engine.gerar_portfolio_lotofacil_markov(quantidade=2, concurso_anterior=base_3832)
+        self.assertTrue(res_loto["ok"])
+        self.assertEqual(len(res_loto["jogos"]), 2)
+        for j in res_loto["jogos"]:
+            self.assertEqual(len(j), 15)
+            rep = len(set(j) & set(base_3832))
+            self.assertIn(rep, [8, 9, 10])
+            self.assertTrue(175 <= sum(j) <= 215)
+
+        # Quina Hedging
+        jogo_base = [12, 19, 27, 42, 53]
+        res_q = self.engine.gerar_hedging_vizinhanca_quina(jogo_base=jogo_base, quantidade=2)
+        self.assertTrue(res_q["ok"])
+        self.assertEqual(len(res_q["jogos"]), 2)
+        self.assertEqual(res_q["jogos"][0], sorted(jogo_base))
+        self.assertEqual(len(res_q["jogos"][1]), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
