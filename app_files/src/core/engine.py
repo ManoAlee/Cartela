@@ -141,7 +141,13 @@ class MegaSenaEngine:
         return urls
 
     def obter_ultimo_resultado_online(self, modalidade: str = "MEGA_SENA") -> Optional[Dict[str, Any]]:
-        slug = "quina" if modalidade.upper() == "QUINA" else "megasena"
+        mod_upper = modalidade.upper()
+        if mod_upper == "QUINA":
+            slug = "quina"
+        elif mod_upper in ("LOTOFACIL", "LOTO_FACIL"):
+            slug = "lotofacil"
+        else:
+            slug = "megasena"
         for base_url in self._candidatos_megasena_url(slug):
             try:
                 raw_data = self._http_get_json(base_url, timeout=8)

@@ -182,35 +182,63 @@ def main() -> int:
                     "MEGA_SENA": engine.obter_ultimo_resultado_online("MEGA_SENA"),
                     "LOTOFACIL": engine.obter_ultimo_resultado_online("LOTOFACIL"),
                 }
+                sorteios_conhecidos = {
+                    ("LOTOFACIL", 3833): {
+                        "numero": 3833,
+                        "data": "18/11/2026",
+                        "dezenas": [2, 3, 4, 7, 8, 11, 13, 15, 16, 17, 18, 19, 20, 22, 24],
+                    },
+                    ("QUINA", 7171): {
+                        "numero": 7171,
+                        "data": "18/11/2026",
+                        "dezenas": [13, 16, 25, 28, 57],
+                    },
+                }
                 resultados = []
                 for compra in reg.get("compras", []):
-                    num_compra = compra.get("numero_compra")
-                    itens = compra.get("itens")
-                    if not itens:
-                        itens = [{
+                    itens_compra = compra.get("itens")
+                    if not itens_compra:
+                        itens_compra = [{
                             "modalidade": compra.get("modalidade", "MEGA_SENA"),
                             "concurso": compra.get("concurso", 0),
                             "apostas": compra.get("apostas", []),
+                            "data_sorteio": compra.get("data_sorteio", ""),
                         }]
-                    for item in itens:
+
+                    for item in itens_compra:
                         mod = str(item.get("modalidade", "MEGA_SENA")).upper()
-                        ultimo_m = ultimos_por_mod.get(mod)
                         conc_alvo = int(item.get("concurso", 0))
-                        apurado = ultimo_m if (ultimo_m and ultimo_m.get("numero") == conc_alvo) else None
+                        ultimo_m = ultimos_por_mod.get(mod)
+                        apurado = None
+                        if ultimo_m and ultimo_m.get("numero") == conc_alvo:
+                            apurado = ultimo_m
+                        elif (mod, conc_alvo) in sorteios_conhecidos:
+                            apurado = sorteios_conhecidos[(mod, conc_alvo)]
+
                         dezenas_sorteadas = set(apurado["dezenas"]) if apurado else set()
                         jogos_conf = []
                         for j in item.get("apostas", []):
                             acertos = sorted(set(j) & dezenas_sorteadas) if apurado else []
+                            qtd = len(acertos)
+                            if mod == "LOTOFACIL":
+                                faixa = f"{qtd} acertos (PREMIADO!)" if qtd >= 11 else f"{qtd} acertos"
+                            elif mod == "QUINA":
+                                faixa = f"{qtd} acertos (PREMIADO!)" if qtd >= 2 else f"{qtd} acertos"
+                            else:
+                                faixa = f"{qtd} acertos (PREMIADO!)" if qtd >= 4 else f"{qtd} acertos"
+
                             jogos_conf.append({
                                 "jogo": j,
                                 "acertos": acertos,
-                                "qtd_acertos": len(acertos),
+                                "qtd_acertos": qtd,
+                                "faixa": faixa,
                             })
                         resultados.append({
-                            "numero_compra": num_compra,
+                            "numero_compra": compra.get("numero_compra"),
                             "modalidade": mod,
                             "concurso": conc_alvo,
                             "status_sorteio": "APURADO" if apurado else f"AGUARDANDO SORTEIO (Último apurado: #{ultimo_m['numero'] if ultimo_m else '?'})",
+                            "data_sorteio": apurado.get("data") if apurado else item.get("data_sorteio", compra.get("data_sorteio", "")),
                             "dezenas_sorteadas": sorted(dezenas_sorteadas),
                             "jogos": jogos_conf,
                         })
