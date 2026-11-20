@@ -203,6 +203,21 @@ def main() -> int:
                         "data": "18/11/2026",
                         "dezenas": [13, 16, 25, 28, 57],
                     },
+                    ("LOTOFACIL", 3834): {
+                        "numero": 3834,
+                        "data": "19/11/2026",
+                        "dezenas": [2, 3, 4, 6, 7, 9, 11, 13, 15, 17, 20, 21, 22, 24, 25],
+                    },
+                    ("MEGA_SENA", 3088): {
+                        "numero": 3088,
+                        "data": "19/11/2026",
+                        "dezenas": [10, 21, 24, 28, 34, 44],
+                    },
+                    ("QUINA", 7172): {
+                        "numero": 7172,
+                        "data": "19/11/2026",
+                        "dezenas": [4, 11, 40, 45, 48],
+                    },
                 }
                 resultados = []
                 for compra in reg.get("compras", []):
